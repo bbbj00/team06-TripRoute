@@ -30,11 +30,22 @@
   - [x] `ui/`, `data/` (raw, cache, sample), `docs/`, `tests/`
 - [x] `app/core/config.py` — `.env` 환경변수 로드 로직 구현
 - [x] `app/main.py` — FastAPI 앱 초기화 및 기본 실행 확인 (`uvicorn app.main:app --reload`)
-- [x] `ui/gradio_app.py` — Gradio 기본 UI 실행 확인
-- [x] `app/schemas/` — 요청/응답 Pydantic 모델 정의
+- [ ] `ui/gradio_app.py` — Gradio 기본 UI 실행 확인 (파일은 생성됐지만 내용 비어있음 — 구현 필요)
+- [ ] `app/schemas/` — 요청/응답 Pydantic 모델 정의
   - [x] `request.py` (user_input, transport_mode, people_count)
-  - [x] `response.py` (condition_summary, daily_schedule, cost_summary, warnings)
-  - [] `place.py` (관광지 데이터 모델)
+  - [x] `response.py` (condition_summary, daily_schedule, route_summary, cost_summary, warnings)
+  - [ ] `place.py` (관광지 데이터 모델, 파일은 생성됐지만 내용 비어있음 — 구현 필요)
+
+---
+
+### Mock ReAct Loop 프로토타입 — Step 1~3 선행 작업
+
+- [x] `app/agents/react_loop.py` — Thought → Action → Observation → Final 흐름의 Mock ReAct Loop 구현
+- [x] `app/tools/mock_tools.py` — `search_places` / `get_related_places` / `get_route_info` / `estimate_cost` Mock Tool 구현
+- [x] `app/tools/schemas.py` — `ToolResult` 스키마 정의
+- [x] `tests/test_react_loop.py`, `tests/conftest.py` — Mock ReAct Loop pytest 시나리오
+- [ ] 위 Mock Tool들을 Step 2의 실제 API 서비스(`tour_api.py`, `related_place_api.py`, `kakao_mobility.py`)로 교체
+- [ ] `react_loop.py`를 Step 3의 Coordinator/Route Planner/Financial 3-Agent + LangGraph 구조로 리팩터링
 
 ---
 
@@ -52,7 +63,7 @@
 
 ## Step 3. State 및 Agent 기본 흐름 구현
 
-- [ ] `app/core/state.py` — `TripRouteState` TypedDict 정의 (README 9절 필드 기준)
+- [x] `app/core/state.py` — `TripRouteState` TypedDict 정의 (README 9절 필드 기준)
 - [ ] `app/core/prompts.py` — Agent별 프롬프트 템플릿 관리
 - [ ] `app/agents/coordinator.py` — 자연어 입력 분석 및 조건 추출 (도시·계절·기간·취향·일정강도·이동수단·인원수)
 - [ ] `app/agents/route_planner.py` — 관광지 후보 생성 기본 로직
