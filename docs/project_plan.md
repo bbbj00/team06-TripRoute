@@ -7,20 +7,19 @@
 
 ## Step 0. 개발 환경 및 사전 준비
 
-- [ ] Python 가상환경(`.venv`) 생성 및 활성화
-- [ ] `requirements.txt` 정의 (FastAPI, Gradio, LangGraph, langchain, supabase, httpx, python-dotenv, langfuse 등)
-- [ ] `pip install -r requirements.txt` 설치 확인
-- [ ] `.env.example` 작성 (Upstage / TourAPI / Kakao Mobility / Supabase / Langfuse 키)
-- [ ] `.env` 생성 및 실제 API Key 입력 (Git에 커밋되지 않도록 주의)
-- [ ] `.gitignore`에 `.env`, `.venv`, `__pycache__`, `data/cache/`, `data/raw/` 포함 확인
-- [ ] 각 외부 API 계정 발급 및 키 확보
-  - [ ] Upstage Solar API 키
-  - [ ] 공공데이터포털(data.go.kr) 인증키 발급 — **아래 두 서비스에 각각 "활용신청" (키 값은 계정당 1개 공통, `TOUR_API_KEY` 하나로 둘 다 호출)**
-    - [ ] 한국관광공사_국문 관광정보 서비스_GW (ID 15101578) — 일반 관광정보
-    - [ ] 한국관광공사_관광지별 연관 관광지 정보 (ID 15128560) — 연관 관광지
-  - [ ] 카카오모빌리티 API 키
-  - [ ] Supabase 프로젝트 생성 + URL/KEY
-  - [ ] Langfuse 프로젝트 생성 + 키
+- [x] `uv` 기반 가상환경 세팅 (`pyproject.toml` + `uv.lock`, FastAPI/Gradio/LangGraph/langchain/supabase/httpx/python-dotenv/langfuse 등)
+- [x] 팀원 각자 `uv sync` 실행해 동일 환경 재현
+- [x] `.env.example` 작성 (Upstage / TourAPI / Kakao Mobility / Supabase / Langfuse 키)
+- [x] `.env` 생성 및 실제 API Key 입력 (Git에 커밋되지 않도록 주의)
+- [x] `.gitignore`에 `.env`, `.venv`, `__pycache__`, `data/cache/`, `data/raw/` 포함 확인
+- [x] 각 외부 API 계정 발급 및 키 확보
+  - [x] Upstage Solar API 키
+  - [x] 공공데이터포털(data.go.kr) 인증키 발급 — **아래 두 서비스에 각각 "활용신청" (키 값은 계정당 1개 공통, `TOUR_API_KEY` 하나로 둘 다 호출)**
+    - [x] 한국관광공사_국문 관광정보 서비스_GW (ID 15101578) — 일반 관광정보
+    - [x] 한국관광공사_관광지별 연관 관광지 정보 (ID 15128560) — 연관 관광지
+  - [x] 카카오모빌리티 API 키
+  - [x] Supabase 프로젝트 생성 + URL/KEY
+  - [x] Langfuse 프로젝트 생성 + 키
 
 ---
 
