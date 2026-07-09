@@ -25,16 +25,16 @@
 
 ## Step 1. 프로젝트 기본 구조 구성
 
-- [ ] README의 폴더 구조에 맞춰 디렉토리 및 `__init__.py` 생성
-  - [ ] `app/` (core, graph, agents, services, rag, utils, schemas)
-  - [ ] `ui/`, `data/` (raw, cache, sample), `docs/`, `tests/`
-- [ ] `app/core/config.py` — `.env` 환경변수 로드 로직 구현
-- [ ] `app/main.py` — FastAPI 앱 초기화 및 기본 실행 확인 (`uvicorn app.main:app --reload`)
-- [ ] `ui/gradio_app.py` — Gradio 기본 UI 실행 확인
-- [ ] `app/schemas/` — 요청/응답 Pydantic 모델 정의
-  - [ ] `request.py` (user_input, transport_mode, people_count)
-  - [ ] `response.py` (condition_summary, daily_schedule, cost_summary, warnings)
-  - [ ] `place.py` (관광지 데이터 모델)
+- [x] README의 폴더 구조에 맞춰 디렉토리 및 `__init__.py` 생성
+  - [x] `app/` (core, graph, agents, services, rag, utils, schemas)
+  - [x] `ui/`, `data/` (raw, cache, sample), `docs/`, `tests/`
+- [x] `app/core/config.py` — `.env` 환경변수 로드 로직 구현
+- [x] `app/main.py` — FastAPI 앱 초기화 및 기본 실행 확인 (`uvicorn app.main:app --reload`)
+- [x] `ui/gradio_app.py` — Gradio 기본 UI 실행 확인
+- [x] `app/schemas/` — 요청/응답 Pydantic 모델 정의
+  - [x] `request.py` (user_input, transport_mode, people_count)
+  - [x] `response.py` (condition_summary, daily_schedule, cost_summary, warnings)
+  - [] `place.py` (관광지 데이터 모델)
 
 ---
 
