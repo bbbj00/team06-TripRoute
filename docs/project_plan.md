@@ -42,20 +42,25 @@
 
 - [x] `app/agents/react_loop.py` — Thought → Action → Observation → Final 흐름의 Mock ReAct Loop 구현
 - [x] `app/tools/mock_tools.py` — `search_places` / `get_related_places` / `get_route_info` / `estimate_cost` Mock Tool 구현
-- [x] `app/tools/schemas.py` — `ToolResult` 스키마 정의
+- [x] `app/tools/schemas.py` — `ToolResult` 스키마 정의 (⚠️ `ToolCall`은 정의만 되어있고 실제로는 미사용 — 아래 참고)
 - [x] `tests/test_react_loop.py`, `tests/conftest.py` — Mock ReAct Loop pytest 시나리오
 - [ ] 위 Mock Tool들을 Step 2의 실제 API 서비스(`tour_api.py`, `related_place_api.py`, `kakao_mobility.py`)로 교체
 - [ ] `react_loop.py`를 Step 3의 Coordinator/Route Planner/Financial 3-Agent + LangGraph 구조로 리팩터링
+- [x] **설계 결정**: TripRoute는 절차가 항상 고정된 파이프라인이라 Tool Calling(LLM이 다음 행동을
+      스스로 판단하는 ReAct 방식)을 도입하지 않기로 함. 대신 LangGraph 고정 그래프 + 각 Agent 내부의
+      좁은 범위 LLM 호출(입력 분석/문장 생성/텍스트 구조화) 방식으로 감. 상세 근거는
+      `docs/architecture.md` 참고. `app/tools/` 폴더는 지금 지우지 않고 유지 — Step 2/3 리팩터링
+      시점에 팀 논의 후 삭제 여부 재결정.
 
 ---
 
 ## Step 2. 외부 API 연결 테스트
 
-- [ ] `app/services/tour_api.py` — 관광지 검색/상세(개요·좌표·운영시간·usefee) 호출 및 테스트
-- [ ] `app/services/related_place_api.py` — 연관 관광지 조회 호출 및 테스트
-- [ ] `app/services/kakao_mobility.py` — 길찾기(거리·소요시간·택시요금·통행료) 호출 및 테스트
-- [ ] `app/services/upstage_client.py` — Solar LLM + Embedding 호출 및 테스트
-- [ ] `app/services/supabase_client.py` — Supabase 연결 및 pgvector 확장 활성화 확인
+- [x] `app/services/tour_api.py` — 관광지 검색(`searchKeyword2`)/상세공통(`detailCommon2`)/소개정보(`detailIntro2`, 운영시간·usefee) 호출 및 테스트 완료
+- [x] `app/services/related_place_api.py` — 연관 관광지 조회(`areaBasedList1`, `searchKeyword1`) 호출 및 테스트 완료
+- [x] `app/services/kakao_mobility.py` — 길찾기(거리·소요시간·택시요금·통행료) 호출 및 테스트 완료
+- [x] `app/services/upstage_client.py` — Solar LLM(`solar-pro2`) + Embedding(query/passage, 4096차원) 호출 및 테스트 완료
+- [x] `app/services/supabase_client.py` — Supabase 연결 확인 + pgvector 확장/테이블/검색 함수 세팅 완료 (`insert_place`, `search_similar_places`로 실제 강릉 관광지 임베딩 저장·유사도 검색까지 테스트 성공, Step 4 RAG 기반 작업 미리 완료)
 - [ ] `app/utils/cache.py` — API 응답 캐싱(JSON/CSV) 구현
 - [ ] `data/sample/` — API 실패 대비 샘플 데이터 확보 (`sample_places.json`, `sample_routes.json`, `sample_plan.json`)
 
@@ -107,6 +112,13 @@
 - [ ] 예상 비용표 출력 (교통비·식비·카페비·입장료·숙박비·총액)
 - [ ] 주의사항(warnings) 출력 — 대중교통 추정치 안내 문구 필수 포함
 - [ ] Gradio UI에서 결과 렌더링 (표 형태)
+- [ ] **UX: 파이프라인 진행상황 표시 + 최종 문장 스트리밍**
+  - [ ] 앞 단계(관광지 검색 → RAG → 동선 계산 → 비용 계산) 진행 중 Gradio 상태 메시지 표시
+        (예: "관광지 찾는 중...", "동선 계산 중...", "비용 계산 중...")
+  - [ ] Coordinator의 최종 문장 생성(추천 이유·일정 설명) 부분은 Upstage `stream=True` +
+        Gradio `yield` 기반으로 타이핑 효과 스트리밍 (SSE 직접 구현 불필요)
+  - [ ] 주의: `cost_summary`/`route_summary` 같은 계산된 수치 데이터는 스트리밍 대상이 아니라
+        계산 완료 시 한 번에 표시됨 — 스트리밍은 자연어 텍스트 부분에만 적용
 
 ---
 
