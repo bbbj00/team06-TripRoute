@@ -30,11 +30,11 @@
   - [x] `ui/`, `data/` (raw, cache, sample), `docs/`, `tests/`
 - [x] `app/core/config.py` — `.env` 환경변수 로드 로직 구현
 - [x] `app/main.py` — FastAPI 앱 초기화 및 기본 실행 확인 (`uvicorn app.main:app --reload`)
-- [ ] `ui/gradio_app.py` — Gradio 기본 UI 실행 확인
+- [ ] `ui/gradio_app.py` — Gradio 기본 UI 실행 확인 (파일은 생성됐지만 내용 비어있음 — 구현 필요)
 - [ ] `app/schemas/` — 요청/응답 Pydantic 모델 정의
   - [x] `request.py` (user_input, transport_mode, people_count)
   - [x] `response.py` (condition_summary, daily_schedule, route_summary, cost_summary, warnings)
-  - [ ] `place.py` (관광지 데이터 모델)
+  - [ ] `place.py` (관광지 데이터 모델, 파일은 생성됐지만 내용 비어있음 — 구현 필요)
 
 ---
 
