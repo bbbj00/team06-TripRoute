@@ -3,6 +3,8 @@ from app.utils.transport_rules import (
     estimate_public_transport_fee,
     estimate_public_transport_time,
     estimate_transport_cost,
+    recommend_vehicle_by_people,
+    estimate_rental_car_cost,
 )
 
 
@@ -59,3 +61,22 @@ def test_build_cost_summary_total():
     assert summary["transport"] == 12000
     assert summary["total"] > summary["transport"]
     assert summary["currency"] == "KRW"
+
+    from app.utils.transport_rules import recommend_vehicle_by_people, estimate_rental_car_cost
+
+
+def test_recommend_vehicle_by_people():
+    result = recommend_vehicle_by_people(people_count=4)
+
+    assert result["vehicle_type"] == "중형차"
+    assert result["daily_rental_fee"] == 80000
+
+
+def test_rental_car_cost_by_days():
+    result = estimate_rental_car_cost(
+        people_count=2,
+        travel_days=2,
+    )
+
+    assert result["vehicle_type"] == "소형차"
+    assert result["rental_cost"] == 120000

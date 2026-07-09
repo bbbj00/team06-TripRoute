@@ -28,12 +28,64 @@ def estimate_public_transport_fee(distance_km: float, people_count: int = 1) -> 
     return fee_per_person * people_count
 
 
+def recommend_vehicle_by_people(people_count: int) -> dict:
+    """
+    인원수에 따라 렌터카 차종과 1일 렌트비를 추천합니다.
+    MVP용 평균 추정값입니다.
+    """
+
+    if people_count <= 2:
+        return {
+            "vehicle_type": "소형차",
+            "daily_rental_fee": 60000,
+            "reason": "1~2명 여행에 적합한 경제적인 차량입니다.",
+        }
+
+    if people_count <= 4:
+        return {
+            "vehicle_type": "중형차",
+            "daily_rental_fee": 80000,
+            "reason": "3~4명 여행에 적합한 일반적인 차량입니다.",
+        }
+
+    if people_count <= 6:
+        return {
+            "vehicle_type": "SUV/대형차",
+            "daily_rental_fee": 120000,
+            "reason": "5~6명 여행과 짐이 많은 일정에 적합합니다.",
+        }
+
+    return {
+        "vehicle_type": "승합차",
+        "daily_rental_fee": 150000,
+        "reason": "7명 이상 단체 여행에 적합합니다.",
+    }
+
+
+def estimate_rental_car_cost(people_count: int, travel_days: int) -> dict:
+    """
+    인원수와 여행일수를 바탕으로 렌터카 비용을 계산합니다.
+    """
+
+    vehicle = recommend_vehicle_by_people(people_count)
+    rental_cost = vehicle["daily_rental_fee"] * travel_days
+
+    return {
+        "vehicle_type": vehicle["vehicle_type"],
+        "daily_rental_fee": vehicle["daily_rental_fee"],
+        "travel_days": travel_days,
+        "rental_cost": rental_cost,
+        "reason": vehicle["reason"],
+    }
+
+
 def estimate_transport_cost(
     transport_mode: str,
     distance_km: float,
     car_minutes: int,
     taxi_fare: int | None,
     people_count: int,
+    travel_days: int = 1,
 ) -> dict:
     """
     이동수단별 교통비와 예상 시간을 계산합니다.
@@ -55,12 +107,32 @@ def estimate_transport_cost(
             "is_estimated": True,
         }
 
-    if transport_mode in ["자차", "렌터카"]:
+    if transport_mode == "자차":
         return {
             "transport_mode": transport_mode,
             "estimated_time_minutes": car_minutes,
             "estimated_cost": 0,
             "is_estimated": True,
+            "memo": "자차 비용은 MVP 기준에서 별도 계산하지 않습니다.",
+        }
+
+    if transport_mode == "렌터카":
+        rental_info = estimate_rental_car_cost(
+            people_count=people_count,
+            travel_days=travel_days,
+        )
+
+        return {
+            "transport_mode": transport_mode,
+            "estimated_time_minutes": car_minutes,
+            "estimated_cost": rental_info["rental_cost"],
+            "is_estimated": True,
+            "vehicle_recommendation": {
+                "vehicle_type": rental_info["vehicle_type"],
+                "daily_rental_fee": rental_info["daily_rental_fee"],
+                "travel_days": rental_info["travel_days"],
+                "reason": rental_info["reason"],
+            },
         }
 
     return {
