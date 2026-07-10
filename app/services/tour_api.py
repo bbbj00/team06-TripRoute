@@ -48,6 +48,15 @@ def _request(operation: str, params: Dict[str, Any]) -> Dict[str, Any]:
     return body["response"]["body"]
 
 
+def _extract_items(body: Dict[str, Any]) -> List[Dict[str, Any]]:
+    # 결과가 0건이면 게이트웨이가 items를 {}가 아니라 ""(빈 문자열)로 내려줄 때가 있어 방어적으로 처리
+    items_field = body.get("items")
+    if not isinstance(items_field, dict):
+        return []
+    items = items_field.get("item", [])
+    return items if isinstance(items, list) else [items] if items else []
+
+
 def search_keyword(
     keyword: str,
     content_type_id: Optional[str] = None,
@@ -67,8 +76,7 @@ def search_keyword(
         params["contentTypeId"] = content_type_id
 
     body = _request("searchKeyword2", params)
-    items = body.get("items", {}).get("item", [])
-    return items if isinstance(items, list) else [items] if items else []
+    return _extract_items(body)
 
 
 def get_detail_common(content_id: str) -> Dict[str, Any]:
@@ -82,10 +90,8 @@ def get_detail_common(content_id: str) -> Dict[str, Any]:
     params = {"contentId": content_id}
 
     body = _request("detailCommon2", params)
-    items = body.get("items", {}).get("item", [])
-    if isinstance(items, list):
-        return items[0] if items else {}
-    return items or {}
+    items = _extract_items(body)
+    return items[0] if items else {}
 
 
 def get_detail_intro(content_id: str, content_type_id: str) -> Dict[str, Any]:
@@ -103,7 +109,5 @@ def get_detail_intro(content_id: str, content_type_id: str) -> Dict[str, Any]:
     }
 
     body = _request("detailIntro2", params)
-    items = body.get("items", {}).get("item", [])
-    if isinstance(items, list):
-        return items[0] if items else {}
-    return items or {}
+    items = _extract_items(body)
+    return items[0] if items else {}
