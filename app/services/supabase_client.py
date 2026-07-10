@@ -1,0 +1,134 @@
+from typing import Any, Dict, List, Optional
+
+from supabase import Client, create_client
+
+from app.core.config import settings
+
+
+def get_client() -> Client:
+    return create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+
+
+def insert_place(
+    content_id: str,
+    title: str,
+    overview: str,
+    embedding: List[float],
+    address: Optional[str] = None,
+    category: Optional[str] = None,
+    event_start_date: Optional[str] = None,
+    event_end_date: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    관광지 정보와 임베딩을 places 테이블에 저장합니다.
+    content_id가 이미 있으면 덮어씁니다(upsert).
+    event_start_date/event_end_date는 축제(축제공연행사) 개최기간용이며, 해당 없는 장소는 None으로 저장됩니다.
+    """
+
+    row = {
+        "content_id": content_id,
+        "title": title,
+        "overview": overview,
+        "address": address,
+        "category": category,
+        "embedding": embedding,
+        "event_start_date": event_start_date,
+        "event_end_date": event_end_date,
+    }
+
+    response = get_client().table("places").upsert(row, on_conflict="content_id").execute()
+    return response.data
+
+
+def get_festivals_missing_event_dates(limit: int = 1000) -> List[Dict[str, Any]]:
+    """
+    category가 '축제공연행사'인데 event_start_date가 비어있는 행을 가져옵니다 (백필 대상 조회용).
+    """
+
+    response = (
+        get_client()
+        .table("places")
+        .select("content_id")
+        .eq("category", "축제공연행사")
+        .is_("event_start_date", "null")
+        .limit(limit)
+        .execute()
+    )
+    return response.data
+
+
+def update_place_event_dates(content_id: str, event_start_date: Optional[str], event_end_date: Optional[str]) -> Dict[str, Any]:
+    """
+    특정 content_id 행의 개최기간(event_start_date/event_end_date)만 갱신합니다.
+    """
+
+    response = (
+        get_client()
+        .table("places")
+        .update({"event_start_date": event_start_date, "event_end_date": event_end_date})
+        .eq("content_id", content_id)
+        .execute()
+    )
+    return response.data
+
+
+def get_existing_content_ids(content_ids: List[str]) -> set:
+    """
+    주어진 content_id 목록 중 이미 places 테이블에 저장돼 있는 것만 반환합니다.
+    (수집 재개 시 이미 저장된 곳은 TourAPI 상세조회/임베딩을 건너뛰기 위한 용도)
+    """
+
+    if not content_ids:
+        return set()
+
+    response = (
+        get_client()
+        .table("places")
+        .select("content_id")
+        .in_("content_id", content_ids)
+        .execute()
+    )
+    return {row["content_id"] for row in response.data}
+
+
+def get_places_missing_category(limit: int = 1000) -> List[Dict[str, Any]]:
+    """
+    category가 비어있는 관광지 행을 가져옵니다 (백필 대상 조회용).
+    """
+
+    response = (
+        get_client()
+        .table("places")
+        .select("content_id")
+        .is_("category", "null")
+        .limit(limit)
+        .execute()
+    )
+    return response.data
+
+
+def update_place_category(content_id: str, category: str) -> Dict[str, Any]:
+    """
+    특정 content_id 행의 category만 갱신합니다.
+    """
+
+    response = (
+        get_client()
+        .table("places")
+        .update({"category": category})
+        .eq("content_id", content_id)
+        .execute()
+    )
+    return response.data
+
+
+def search_similar_places(query_embedding: List[float], match_count: int = 5) -> List[Dict[str, Any]]:
+    """
+    사용자 취향 임베딩과 가장 비슷한 관광지를 match_places RPC로 검색합니다.
+    """
+
+    response = get_client().rpc(
+        "match_places",
+        {"query_embedding": query_embedding, "match_count": match_count},
+    ).execute()
+    return response.data

@@ -8,8 +8,8 @@ load_dotenv()
 class Settings:
     UPSTAGE_API_KEY: str | None = os.getenv("UPSTAGE_API_KEY")
 
+    # data.go.kr 계정당 인증키가 1개라 TourAPI(15101578)와 연관 관광지 API(15128560)가 같은 키를 씀
     TOUR_API_KEY: str | None = os.getenv("TOUR_API_KEY")
-    RELATED_PLACE_API_KEY: str | None = os.getenv("RELATED_PLACE_API_KEY")
     KAKAO_MOBILITY_API_KEY: str | None = os.getenv("KAKAO_MOBILITY_API_KEY")
 
     SUPABASE_URL: str | None = os.getenv("SUPABASE_URL")
