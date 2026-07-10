@@ -16,10 +16,13 @@ def insert_place(
     embedding: List[float],
     address: Optional[str] = None,
     category: Optional[str] = None,
+    event_start_date: Optional[str] = None,
+    event_end_date: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     관광지 정보와 임베딩을 places 테이블에 저장합니다.
     content_id가 이미 있으면 덮어씁니다(upsert).
+    event_start_date/event_end_date는 축제(축제공연행사) 개최기간용이며, 해당 없는 장소는 None으로 저장됩니다.
     """
 
     row = {
@@ -29,9 +32,43 @@ def insert_place(
         "address": address,
         "category": category,
         "embedding": embedding,
+        "event_start_date": event_start_date,
+        "event_end_date": event_end_date,
     }
 
     response = get_client().table("places").upsert(row, on_conflict="content_id").execute()
+    return response.data
+
+
+def get_festivals_missing_event_dates(limit: int = 1000) -> List[Dict[str, Any]]:
+    """
+    category가 '축제공연행사'인데 event_start_date가 비어있는 행을 가져옵니다 (백필 대상 조회용).
+    """
+
+    response = (
+        get_client()
+        .table("places")
+        .select("content_id")
+        .eq("category", "축제공연행사")
+        .is_("event_start_date", "null")
+        .limit(limit)
+        .execute()
+    )
+    return response.data
+
+
+def update_place_event_dates(content_id: str, event_start_date: Optional[str], event_end_date: Optional[str]) -> Dict[str, Any]:
+    """
+    특정 content_id 행의 개최기간(event_start_date/event_end_date)만 갱신합니다.
+    """
+
+    response = (
+        get_client()
+        .table("places")
+        .update({"event_start_date": event_start_date, "event_end_date": event_end_date})
+        .eq("content_id", content_id)
+        .execute()
+    )
     return response.data
 
 

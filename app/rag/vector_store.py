@@ -4,15 +4,20 @@ from typing import Any, Dict, List, Optional
 from app.rag.embedder import embed_place_overviews
 from app.services.supabase_client import (
     get_existing_content_ids,
+    get_festivals_missing_event_dates,
     get_places_missing_category,
     insert_place,
     update_place_category,
+    update_place_event_dates,
 )
-from app.services.tour_api import TourAPIError, get_detail_common, search_keyword
+from app.services.tour_api import TourAPIError, get_detail_common, get_detail_intro, search_keyword
+
+FESTIVAL_CONTENT_TYPE_ID = "15"
 
 # TourAPI contentTypeId 코드: 12=관광지, 14=문화시설, 15=축제공연행사,
 # 25=여행코스, 28=레포츠, 32=숙박, 38=쇼핑, 39=음식점
-DEFAULT_CONTENT_TYPE_IDS = ["12", "14", "15", "25", "28", "39"]
+# 32(숙박)/38(쇼핑)이 원래 빠져있어서 대부분 도시에 숙박/쇼핑 데이터가 아예 없었음 — 추가함
+DEFAULT_CONTENT_TYPE_IDS = ["12", "14", "15", "25", "28", "32", "38", "39"]
 
 CONTENT_TYPE_ID_TO_CATEGORY = {
     "12": "관광지",
@@ -31,6 +36,55 @@ def content_type_id_to_category(content_type_id: Optional[Any]) -> Optional[str]
     if content_type_id is None:
         return None
     return CONTENT_TYPE_ID_TO_CATEGORY.get(str(content_type_id))
+
+
+# search_keyword("부산")는 전국을 대상으로 title에 "부산"이 들어간 결과를 다 돌려줘서,
+# "부산식당"(충북 소재) 같은 동명 식당/상호가 섞여 들어온다. city별 실제 주소 접두사를 미리 정의해두고,
+# 검색 키워드에 해당하는 시/도가 아닌 주소는 저장 전에 걸러낸다.
+CITY_TO_REGION_PREFIXES = {
+    "서울": ["서울"],
+    "부산": ["부산"],
+    "대구": ["대구"],
+    "인천": ["인천"],
+    "광주": ["광주", "전남광주"],
+    "대전": ["대전"],
+    "울산": ["울산"],
+    "세종": ["세종"],
+    "제주": ["제주"],
+    "수원": ["경기"],
+    "강릉": ["강원"],
+    "춘천": ["강원"],
+    "속초": ["강원"],
+    "전주": ["전북", "전라북도"],
+    "여수": ["전남", "전라남도"],
+    "경주": ["경북", "경상북도"],
+    "통영": ["경남", "경상남도"],
+    "거제": ["경남", "경상남도"],
+}
+
+
+def _parse_tourapi_date(value: Optional[str]) -> Optional[str]:
+    """
+    TourAPI가 내려주는 YYYYMMDD 문자열을 Postgres date 컬럼용 YYYY-MM-DD로 변환합니다.
+    """
+
+    if not value or len(value) != 8 or not value.isdigit():
+        return None
+    return f"{value[0:4]}-{value[4:6]}-{value[6:8]}"
+
+
+def _is_in_expected_region(city: str, address: Optional[str]) -> bool:
+    """
+    address가 city에 해당하는 시/도 소속이 맞는지 확인합니다.
+    city가 CITY_TO_REGION_PREFIXES에 없으면(매핑 안 된 새 도시) 필터링하지 않고 통과시킵니다.
+    """
+
+    prefixes = CITY_TO_REGION_PREFIXES.get(city)
+    if not prefixes:
+        return True
+    if not address:
+        return False
+    return any(address.startswith(p) for p in prefixes)
 
 
 def ingest_city(
@@ -80,6 +134,11 @@ def ingest_city(
         overview = (detail.get("overview") or "").strip()
         if not overview:
             continue
+        # 주소 없는 항목(여행코스 등)은 동선 계산에 못 쓰므로 제외, city 지역과 다른 주소도 제외
+        if not detail.get("addr1"):
+            continue
+        if not _is_in_expected_region(city, detail.get("addr1")):
+            continue
         detail["overview"] = overview
         detail["contenttypeid"] = detail.get("contenttypeid") or candidate.get("contenttypeid") or candidate["_search_type_id"]
         details.append(detail)
@@ -95,6 +154,16 @@ def ingest_city(
         embeddings = embed_place_overviews([d["overview"] for d in batch])
 
         for detail, embedding in zip(batch, embeddings):
+            event_start_date = None
+            event_end_date = None
+            if str(detail.get("contenttypeid")) == FESTIVAL_CONTENT_TYPE_ID:
+                try:
+                    intro = get_detail_intro(detail["contentid"], FESTIVAL_CONTENT_TYPE_ID)
+                    event_start_date = _parse_tourapi_date(intro.get("eventstartdate"))
+                    event_end_date = _parse_tourapi_date(intro.get("eventenddate"))
+                except TourAPIError as e:
+                    print(f"  [경고] {city}/{detail['contentid']} 개최기간 조회 실패: {e}")
+
             insert_place(
                 content_id=detail["contentid"],
                 title=detail.get("title", ""),
@@ -102,6 +171,8 @@ def ingest_city(
                 embedding=embedding,
                 address=detail.get("addr1"),
                 category=content_type_id_to_category(detail.get("contenttypeid")),
+                event_start_date=event_start_date,
+                event_end_date=event_end_date,
             )
             saved.append({"title": detail.get("title"), "content_id": detail["contentid"]})
 
@@ -138,6 +209,44 @@ def backfill_categories() -> Dict[str, int]:
             print(f"  진행: {i + 1}/{len(targets)}")
 
         update_place_category(content_id, category)
+        updated += 1
+
+    print(f"백필 완료: {updated}건 갱신, {failed}건 실패")
+    return {"updated": updated, "failed": failed}
+
+
+def backfill_festival_dates() -> Dict[str, int]:
+    """
+    category가 '축제공연행사'인데 개최기간이 비어있는 기존 places 행에 detailIntro2를 다시 조회해서
+    event_start_date/event_end_date를 채워넣습니다.
+    """
+
+    targets = get_festivals_missing_event_dates(limit=5000)
+    print(f"축제 개최기간 백필 대상: {len(targets)}건")
+
+    updated = 0
+    failed = 0
+    for i, row in enumerate(targets):
+        content_id = row["content_id"]
+        try:
+            intro = get_detail_intro(content_id, FESTIVAL_CONTENT_TYPE_ID)
+        except TourAPIError as e:
+            print(f"  [경고] {content_id} 개최기간 조회 실패: {e}")
+            failed += 1
+            time.sleep(1)  # rate limit(429) 대비, 실패 시 조금 더 쉬어감
+            continue
+
+        event_start_date = _parse_tourapi_date(intro.get("eventstartdate"))
+        event_end_date = _parse_tourapi_date(intro.get("eventenddate"))
+        if not event_start_date:
+            failed += 1
+            continue
+
+        time.sleep(0.2)  # TourAPI rate limit 방지용 호출 간 딜레이
+        if (i + 1) % 100 == 0:
+            print(f"  진행: {i + 1}/{len(targets)}")
+
+        update_place_event_dates(content_id, event_start_date, event_end_date)
         updated += 1
 
     print(f"백필 완료: {updated}건 갱신, {failed}건 실패")
