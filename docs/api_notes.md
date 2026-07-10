@@ -53,6 +53,25 @@
   나눠서 실행하는 걸 권장.
 - 한글이 터미널(Git Bash)에 깨져 보이는 건 콘솔 코드페이지 문제일 뿐, 실제 응답 데이터의
   인코딩은 UTF-8로 정상임 (파일로 저장해서 확인함).
+- **결과 0건일 때 `items`가 `{}`가 아니라 `""`(빈 문자열)로 내려오는 경우가 있음.**
+  `body.get("items", {}).get("item", [])`처럼 짜면 `''.get(...)`에서 `AttributeError`로 죽는다.
+  `tour_api.py`의 `_extract_items()` 헬퍼로 방어 처리함 (items가 dict가 아니면 빈 리스트 반환).
+
+### TourAPI 대량 수집 이슈 (강릉/속초/춘천/부산/제주/경주/전주/여수/인천/서울 10개 도시 수집 중 발견)
+
+- **`searchKeyword2`는 전국 대상 키워드 검색이라, 도시 이름으로 검색해도 그 도시에 없는 동명
+  상호가 대거 섞여 들어온다.** 예: "부산" 검색 시 충청북도 옥천군의 "부산식당", 서울의
+  "부산복집" 등 전국 각지의 동명 식당이 결과에 포함됨. 실측 결과 전체 수집 데이터의 약
+  18%가 이런 지역 불일치 오염 데이터였음. **대응**: `vector_store.py`의
+  `CITY_TO_REGION_PREFIXES`로 도시별 실제 주소 접두사를 정의해두고, `addr1`이 여기 안 맞으면
+  저장 전에 걸러냄 (`_is_in_expected_region`). 주소가 아예 없는 항목(여행코스 등, 단일 주소가
+  없는 콘텐츠 타입)도 동선 계산에 못 쓰므로 같이 제외함.
+- **`DEFAULT_CONTENT_TYPE_IDS`에 32(숙박)/38(쇼핑)이 원래 빠져있었음.** 그래서 초기 수집분은
+  대부분 도시에 숙박·쇼핑 데이터가 아예 없었음 — 나중에 발견해서 추가하고 별도로 보충 수집함.
+  새 도시를 수집할 땐 이 8개 타입(`12,14,15,25,28,32,38,39`)이 다 포함됐는지 확인할 것.
+- **`contenttypeid` 필드가 문자열("12")이 아니라 숫자(12)로 내려올 때가 있어서**, dict 키 조회 시
+  `str()`로 정규화 안 하면 category가 계속 `None`으로 저장되는 버그가 있었음
+  (`content_type_id_to_category`에서 처리함).
 
 ---
 
@@ -152,6 +171,10 @@ create table if not exists places (
     overview text,
     category text,
     embedding vector(4096),
+    event_start_date date,
+    event_end_date date,
+    rating numeric,
+    review_count integer,
     created_at timestamptz default now()
 );
 
@@ -186,3 +209,40 @@ $$;
   함수를 만들고 `client.rpc("match_places", {...})`로 호출하는 방식을 씀.**
 - `app/services/supabase_client.py`의 `insert_place`(upsert)와 `search_similar_places`(RPC 호출)로
   실제 강릉 관광지 5개 임베딩 저장 + 취향 문장 검색까지 end-to-end 테스트 성공함.
+- `event_start_date`/`event_end_date`/`rating`/`review_count` 컬럼은 나중에 각각
+  `alter table places add column if not exists ...`로 추가함 (SQL Editor에서 수동 실행,
+  Supabase REST API로는 DDL 불가). 위 `create table` 문에는 최신 스키마 기준으로 반영해뒀음.
+- **`select()`가 기본적으로 1000행까지만 반환함(PostgREST 기본 페이지 제한).** 전체 조회할 땐
+  `.range(start, start+999)`로 페이지네이션 안 하면 실제로는 더 많은 행이 있는데도 1000건인 줄
+  착각하게 됨 — 데이터 정리 작업 중 실제 1024건을 1000건으로 잘못 파악해서 24건을 놓친 적 있음.
+
+---
+
+## 6. Google Places API (New) — 평점/리뷰수 보강 (`app/services/google_places_api.py`)
+
+- **왜 필요한가**: TourAPI(한국관광공사)는 공식 등록 DB라 별점/리뷰 필드가 아예 없고, 카카오
+  로컬 API·네이버 검색 API도 별점·리뷰수 필드를 안 줌. 별점/리뷰수를 제공하는 API는 Google
+  Places가 사실상 유일함.
+- **Legacy 말고 반드시 New 버전을 쓸 것.** Places API(Legacy)는 2025년 3월부로 동결되어
+  **신규 프로젝트에서는 활성화 자체가 안 됨.** Google Cloud Console에서 라이브러리 검색할 때도
+  "Places API"가 아니라 "**Places API (New)**"를 활성화해야 함.
+- Base URL: `https://places.googleapis.com/v1/places:searchText` (POST, JSON body)
+- 인증: 쿼리 파라미터가 아니라 `X-Goog-Api-Key` 헤더로 전달. 응답 필드를 제한하려면
+  `X-Goog-FieldMask` 헤더가 **필수**임 (없으면 대부분 필드가 빈 응답으로 옴).
+- 응답 필드명이 Legacy와 다름: `user_ratings_total`이 아니라 **`userRatingCount`**(camelCase).
+- **이름 텍스트 검색만으로는 심각한 오매칭이 발생함.** 실측: "존재하지않는가상의장소12345"라는
+  완전 가짜 이름을 검색했는데, 서울의 "이혼·상속 전문로펌 법무법인 **존재**"가 매칭됨
+  (상호명에 "존재"라는 글자가 겹친다는 이유만으로). 카테고리·거리 제약이 없는 순수 텍스트
+  유사도 검색이라 이런 사고가 실제로 남.
+  - 주소 문자열 비교(시/군 토큰 일치 검증)로 오매칭을 걸러보려 했으나, 안목해변처럼
+    `formattedAddress`에 시/군 표기가 아예 없는 자연 명소(관광지)를 오히려 걸러내는
+    부작용이 있어서 채택하지 않음.
+  - **대신 TourAPI의 `mapx`(경도)/`mapy`(위도)로 `locationBias`(원형 반경, 기본 500m)를 걸어
+    검증함 — 실측 결과 이 방식만으로 위 오매칭 사고가 재현되지 않음.** `find_place()`/
+    `get_rating_and_review_count()` 호출 시 **가능하면 항상 lat/lng을 같이 넘길 것.**
+    좌표 없이 이름만으로 부르면 오매칭 위험이 남음.
+- 매칭 실패(또는 검색 결과 없음) 시 `rating`/`review_count` 둘 다 `None`으로 저장됨. **이건
+  삭제 대상이 아님** — Google에 등록 안 된 정상적인 로컬 장소일 뿐이고, 오히려 review_count
+  기반 "로컬/hidden-gem" 필터링(Step 3 참고)에 유용한 신호가 될 수 있음.
+- 결제 계정 등록이 필수 (등록 안 하면 API 활성화가 안 됨). 신규 Google Cloud 계정은 보통
+  크레딧을 줘서 이 프로젝트 규모에서는 과금 걱정이 거의 없음.

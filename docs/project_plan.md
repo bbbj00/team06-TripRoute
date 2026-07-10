@@ -61,8 +61,14 @@
 - [x] `app/services/kakao_mobility.py` — 길찾기(거리·소요시간·택시요금·통행료) 호출 및 테스트 완료
 - [x] `app/services/upstage_client.py` — Solar LLM(`solar-pro2`) + Embedding(query/passage, 4096차원) 호출 및 테스트 완료
 - [x] `app/services/supabase_client.py` — Supabase 연결 확인 + pgvector 확장/테이블/검색 함수 세팅 완료 (`insert_place`, `search_similar_places`로 실제 강릉 관광지 임베딩 저장·유사도 검색까지 테스트 성공, Step 4 RAG 기반 작업 미리 완료)
-- [ ] `app/utils/cache.py` — API 응답 캐싱(JSON/CSV) 구현
-- [ ] `data/sample/` — API 실패 대비 샘플 데이터 확보 (`sample_places.json`, `sample_routes.json`, `sample_plan.json`)
+- [x] `app/utils/cache.py` — API 응답 캐싱(JSON) 구현. `cached_call()`로 감싸서 `kakao_mobility.get_route()`에
+      적용 완료 (같은 출발지-도착지 조합은 24시간 캐시 재사용 — 실측 0.56초 → 0.02초). 목적은 속도뿐 아니라
+      TourAPI 429 같은 할당량 보호 + API 장애 시 Fallback도 겸함.
+- [x] `data/sample/` — API 실패 대비 샘플 데이터 확보 (`sample_places.json`은 불필요 판단으로 스킵 — 위 참고)
+  - [x] `sample_routes.json`: 카카오모빌리티 장애 대비, `summarize_route()`와 동일한 형식(distance_km/
+        duration_min/taxi_fare/toll_fare)으로 강릉 데모 시나리오 구간 3개 작성
+  - [x] `sample_plan.json`: `TripPlanResponse` 스키마와 동일한 형식으로 강릉 1박2일 전체 응답 예시 작성
+        (README 15절 예시 기반, 현재 스키마의 `route_summary` 필드 포함하도록 갱신)
 
 ---
 
@@ -71,7 +77,11 @@
 - [x] `app/core/state.py` — `TripRouteState` TypedDict 정의 (README 9절 필드 기준)
 - [ ] `app/core/prompts.py` — Agent별 프롬프트 템플릿 관리
 - [ ] `app/agents/coordinator.py` — 자연어 입력 분석 및 조건 추출 (도시·계절·기간·취향·일정강도·이동수단·인원수)
+  - [ ] "로컬만 아는 곳/사람 안 몰리는 곳" 같은 표현을 인식해서 `condition_summary`에 hidden-gem
+        선호 신호(예: `prefer_local`)로 남기기 — LLM이 의도는 인식하지만 실제 반영은 Route Planner가 해야 함
 - [ ] `app/agents/route_planner.py` — 관광지 후보 생성 기본 로직
+  - [ ] `places.review_count`(Google Places 연동) 기반으로, `prefer_local` 신호가 있으면 리뷰 수
+        낮은 순 우선 정렬 또는 리뷰 수 상위 장소 제외하는 필터링 로직 추가
 - [ ] `app/agents/financial.py` — 기본 비용 계산 로직
 - [ ] `app/graph/nodes.py` — 각 Agent를 LangGraph 노드로 래핑
 - [ ] `app/graph/edges.py` — Agent 실행 순서 및 조건 분기 정의
@@ -83,12 +93,20 @@
 
 ## Step 4. RAG 구현
 
-- [ ] 관광지 설명 데이터 수집 (TourAPI 개요 텍스트)
-- [ ] `app/rag/embedder.py` — Upstage Embedding으로 관광지 설명 벡터화
-- [ ] `app/rag/vector_store.py` — Supabase pgvector 테이블 생성 및 임베딩 저장
+- [x] 관광지 설명 데이터 수집 (TourAPI 개요 텍스트) — 강릉·속초·춘천·부산·제주·경주·전주·여수·인천·서울
+      10개 도시 × 관광지/문화시설/축제/여행코스/레포츠/숙박/쇼핑/음식점 8개 카테고리 수집 완료
+      (약 1100건). 수집 중 발견된 이슈와 대응은 `docs/api_notes.md` "TourAPI 대량 수집 이슈" 참고.
+- [x] `app/rag/embedder.py` — Upstage Embedding으로 관광지 설명 벡터화
+- [x] `app/rag/vector_store.py` — Supabase pgvector 테이블 생성 및 임베딩 저장
+      (`ingest_city`/`ingest_cities`), category·축제 개최기간(`event_start_date`/`event_end_date`)·
+      Google Places 평점(`rating`/`review_count`) 백필 함수까지 포함
 - [ ] `app/rag/retriever.py` — 사용자 취향 문장 임베딩 → 유사도 검색
 - [ ] Coordinator/Route Planner에서 RAG 검색 결과 연동
 - [ ] RAG 유사도 점수를 Route Planner 추천 로직에 반영
+- [x] **평점/리뷰수 보강**: TourAPI/카카오/네이버 모두 별점·리뷰 데이터가 없어서 Google Places
+      API(New)를 추가 연동함 (`app/services/google_places_api.py`). 이름 텍스트 검색만으로는
+      전혀 무관한 곳이 매칭되는 사고가 있어(예시는 api_notes.md 참고), TourAPI 좌표(mapx/mapy)
+      기반 `locationBias`(500m 반경)로 오매칭을 방지함 — **좌표 없이 이름만으로 호출하지 말 것.**
 
 ---
 
