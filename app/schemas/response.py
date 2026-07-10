@@ -1,15 +1,12 @@
-from typing import Any, Dict, List
+from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class TripPlanResponse(BaseModel):
-    """
-    TripRoute 여행 일정 생성 응답 스키마입니다.
-    """
-
-    condition_summary: Dict[str, Any]
-    daily_schedule: List[Dict[str, Any]]
-    route_summary: List[Dict[str, Any]]
-    cost_summary: Dict[str, Any]
-    warnings: List[str]
+    condition_summary: dict[str, Any]
+    daily_schedule: list[dict[str, Any]]
+    route_summary: list[dict[str, Any]]
+    cost_summary: dict[str, Any]
+    warnings: list[str] = Field(default_factory=list)
+    react_trace: list[dict[str, Any]] = Field(default_factory=list)
