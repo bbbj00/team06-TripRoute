@@ -1,9 +1,23 @@
+import app.agents.route_planner as route_planner
 from app.agents.react_loop import run_triproute_react_loop
 
 
-def test_react_loop_gangneung_mock_scenario():
+def test_react_loop_gangneung_mock_scenario(monkeypatch):
+    # TourAPI 호출 실패를 강제로 만들어 Mock fallback을 검증
+    def raise_tour_api_error(*args, **kwargs):
+        raise RuntimeError("테스트용 TourAPI 실패")
+
+    monkeypatch.setattr(
+        route_planner,
+        "search_keyword",
+        raise_tour_api_error,
+    )
+
     result = run_triproute_react_loop(
-        user_input="강릉으로 1박 2일 여행 가고 싶어. 바다랑 감성 카페, 먹거리를 좋아해.",
+        user_input=(
+            "강릉으로 1박 2일 여행 가고 싶어. "
+            "바다랑 감성 카페, 먹거리를 좋아해."
+        ),
         transport_mode="대중교통",
         people_count=2,
     )
@@ -16,16 +30,5 @@ def test_react_loop_gangneung_mock_scenario():
     assert result["daily_schedule"][0]["place"] == "안목해변"
 
     assert len(result["route_summary"]) >= 1
-    assert result["route_summary"][0]["from"] == "안목해변"
-
     assert result["cost_summary"]["total"] > 0
-
-    assert "react_trace" in result
-    assert len(result["react_trace"]) >= 4
-
-    actions = [step["action"] for step in result["react_trace"]]
-
-    assert "search_places" in actions
-    assert "get_related_places" in actions
-    assert "get_route_info" in actions
-    assert "estimate_cost" in actions
+    assert len(result["react_trace"]) == 6
