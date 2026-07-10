@@ -29,9 +29,10 @@ def create_trip_plan(request: TripPlanRequest) -> TripPlanResponse:
     )
 
     return TripPlanResponse(
-        condition_summary=result["condition_summary"],
-        daily_schedule=result["daily_schedule"],
-        route_summary=result["route_summary"],
-        cost_summary=result["cost_summary"],
-        warnings=result["warnings"],
-    )
+    condition_summary=result["condition_summary"],
+    daily_schedule=result["daily_schedule"],
+    route_summary=result["route_summary"],
+    cost_summary=result["cost_summary"],
+    warnings=result["warnings"],
+    react_trace=result["react_trace"],
+)
