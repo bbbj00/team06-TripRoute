@@ -16,7 +16,8 @@ FESTIVAL_CONTENT_TYPE_ID = "15"
 
 # TourAPI contentTypeId 코드: 12=관광지, 14=문화시설, 15=축제공연행사,
 # 25=여행코스, 28=레포츠, 32=숙박, 38=쇼핑, 39=음식점
-DEFAULT_CONTENT_TYPE_IDS = ["12", "14", "15", "25", "28", "39"]
+# 32(숙박)/38(쇼핑)이 원래 빠져있어서 대부분 도시에 숙박/쇼핑 데이터가 아예 없었음 — 추가함
+DEFAULT_CONTENT_TYPE_IDS = ["12", "14", "15", "25", "28", "32", "38", "39"]
 
 CONTENT_TYPE_ID_TO_CATEGORY = {
     "12": "관광지",
