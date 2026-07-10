@@ -61,8 +61,14 @@
 - [x] `app/services/kakao_mobility.py` — 길찾기(거리·소요시간·택시요금·통행료) 호출 및 테스트 완료
 - [x] `app/services/upstage_client.py` — Solar LLM(`solar-pro2`) + Embedding(query/passage, 4096차원) 호출 및 테스트 완료
 - [x] `app/services/supabase_client.py` — Supabase 연결 확인 + pgvector 확장/테이블/검색 함수 세팅 완료 (`insert_place`, `search_similar_places`로 실제 강릉 관광지 임베딩 저장·유사도 검색까지 테스트 성공, Step 4 RAG 기반 작업 미리 완료)
-- [ ] `app/utils/cache.py` — API 응답 캐싱(JSON/CSV) 구현
-- [ ] `data/sample/` — API 실패 대비 샘플 데이터 확보 (`sample_places.json`, `sample_routes.json`, `sample_plan.json`)
+- [x] `app/utils/cache.py` — API 응답 캐싱(JSON) 구현. `cached_call()`로 감싸서 `kakao_mobility.get_route()`에
+      적용 완료 (같은 출발지-도착지 조합은 24시간 캐시 재사용 — 실측 0.56초 → 0.02초). 목적은 속도뿐 아니라
+      TourAPI 429 같은 할당량 보호 + API 장애 시 Fallback도 겸함.
+- [x] `data/sample/` — API 실패 대비 샘플 데이터 확보 (`sample_places.json`은 불필요 판단으로 스킵 — 위 참고)
+  - [x] `sample_routes.json`: 카카오모빌리티 장애 대비, `summarize_route()`와 동일한 형식(distance_km/
+        duration_min/taxi_fare/toll_fare)으로 강릉 데모 시나리오 구간 3개 작성
+  - [x] `sample_plan.json`: `TripPlanResponse` 스키마와 동일한 형식으로 강릉 1박2일 전체 응답 예시 작성
+        (README 15절 예시 기반, 현재 스키마의 `route_summary` 필드 포함하도록 갱신)
 
 ---
 

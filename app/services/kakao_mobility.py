@@ -3,6 +3,7 @@ from typing import Any, Dict, Tuple
 import requests
 
 from app.core.config import settings
+from app.utils.cache import cached_call
 
 BASE_URL = "https://apis-navi.kakaomobility.com/v1/directions"
 
@@ -21,8 +22,19 @@ def get_route(
 
     origin/destination은 (경도, 위도) 순서의 튜플입니다.
     (TourAPI의 mapx=경도, mapy=위도와 순서가 같음)
+    같은 출발지-도착지 조합은 하루 동안 캐시된 응답을 재사용합니다 (교통 상황이 실시간 반영되는
+    API가 아니라 매번 다시 부를 필요가 없음 — 호출 비용/속도 절약).
     """
 
+    cache_params = {"origin": origin, "destination": destination, "priority": priority}
+    return cached_call("kakao_route", cache_params, lambda: _fetch_route(origin, destination, priority))
+
+
+def _fetch_route(
+    origin: Tuple[float, float],
+    destination: Tuple[float, float],
+    priority: str,
+) -> Dict[str, Any]:
     headers = {"Authorization": f"KakaoAK {settings.KAKAO_MOBILITY_API_KEY}"}
     params = {
         "origin": f"{origin[0]},{origin[1]}",
