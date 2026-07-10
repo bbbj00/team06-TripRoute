@@ -71,7 +71,11 @@
 - [x] `app/core/state.py` — `TripRouteState` TypedDict 정의 (README 9절 필드 기준)
 - [ ] `app/core/prompts.py` — Agent별 프롬프트 템플릿 관리
 - [ ] `app/agents/coordinator.py` — 자연어 입력 분석 및 조건 추출 (도시·계절·기간·취향·일정강도·이동수단·인원수)
+  - [ ] "로컬만 아는 곳/사람 안 몰리는 곳" 같은 표현을 인식해서 `condition_summary`에 hidden-gem
+        선호 신호(예: `prefer_local`)로 남기기 — LLM이 의도는 인식하지만 실제 반영은 Route Planner가 해야 함
 - [ ] `app/agents/route_planner.py` — 관광지 후보 생성 기본 로직
+  - [ ] `places.review_count`(Google Places 연동) 기반으로, `prefer_local` 신호가 있으면 리뷰 수
+        낮은 순 우선 정렬 또는 리뷰 수 상위 장소 제외하는 필터링 로직 추가
 - [ ] `app/agents/financial.py` — 기본 비용 계산 로직
 - [ ] `app/graph/nodes.py` — 각 Agent를 LangGraph 노드로 래핑
 - [ ] `app/graph/edges.py` — Agent 실행 순서 및 조건 분기 정의
