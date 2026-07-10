@@ -35,6 +35,25 @@ def insert_place(
     return response.data
 
 
+def get_existing_content_ids(content_ids: List[str]) -> set:
+    """
+    주어진 content_id 목록 중 이미 places 테이블에 저장돼 있는 것만 반환합니다.
+    (수집 재개 시 이미 저장된 곳은 TourAPI 상세조회/임베딩을 건너뛰기 위한 용도)
+    """
+
+    if not content_ids:
+        return set()
+
+    response = (
+        get_client()
+        .table("places")
+        .select("content_id")
+        .in_("content_id", content_ids)
+        .execute()
+    )
+    return {row["content_id"] for row in response.data}
+
+
 def get_places_missing_category(limit: int = 1000) -> List[Dict[str, Any]]:
     """
     category가 비어있는 관광지 행을 가져옵니다 (백필 대상 조회용).

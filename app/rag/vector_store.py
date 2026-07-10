@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Optional
 
 from app.rag.embedder import embed_place_overviews
 from app.services.supabase_client import (
+    get_existing_content_ids,
     get_places_missing_category,
     insert_place,
     update_place_category,
@@ -25,8 +26,11 @@ CONTENT_TYPE_ID_TO_CATEGORY = {
 }
 
 
-def content_type_id_to_category(content_type_id: Optional[str]) -> Optional[str]:
-    return CONTENT_TYPE_ID_TO_CATEGORY.get(content_type_id)
+def content_type_id_to_category(content_type_id: Optional[Any]) -> Optional[str]:
+    # TourAPI 게이트웨이가 이 필드를 문자열("12")이 아니라 숫자(12)로 내려줄 때가 있어 str로 정규화
+    if content_type_id is None:
+        return None
+    return CONTENT_TYPE_ID_TO_CATEGORY.get(str(content_type_id))
 
 
 def ingest_city(
@@ -55,7 +59,14 @@ def ingest_city(
             if candidate["contentid"] in seen_content_ids:
                 continue
             seen_content_ids.add(candidate["contentid"])
+            # detailCommon2가 contenttypeid를 안 내려줄 때를 대비해, 검색에 쓴 type_id를 같이 들고 다님
+            candidate["_search_type_id"] = type_id
             candidates.append(candidate)
+
+    existing_ids = get_existing_content_ids([c["contentid"] for c in candidates])
+    if existing_ids:
+        candidates = [c for c in candidates if c["contentid"] not in existing_ids]
+        print(f"  {city}: 이미 저장된 {len(existing_ids)}건 스킵 (재개 시 API 호출 절약)")
 
     print(f"  {city}: 검색 결과 {len(candidates)}건, 상세정보 조회 중...")
 
@@ -70,6 +81,7 @@ def ingest_city(
         if not overview:
             continue
         detail["overview"] = overview
+        detail["contenttypeid"] = detail.get("contenttypeid") or candidate.get("contenttypeid") or candidate["_search_type_id"]
         details.append(detail)
 
     if not details:
