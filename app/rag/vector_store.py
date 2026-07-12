@@ -16,6 +16,7 @@ from app.services.supabase_client import (
 from app.services.tour_api import TourAPIError, get_detail_common, get_detail_intro, search_keyword
 
 FESTIVAL_CONTENT_TYPE_ID = "15"
+COURSE_CONTENT_TYPE_ID = "25"
 
 # TourAPI contentTypeId 코드: 12=관광지, 14=문화시설, 15=축제공연행사,
 # 25=여행코스, 28=레포츠, 32=숙박, 38=쇼핑, 39=음식점
@@ -144,13 +145,29 @@ def ingest_city(
         overview = (detail.get("overview") or "").strip()
         if not overview:
             continue
-        # 주소 없는 항목(여행코스 등)은 동선 계산에 못 쓰므로 제외, city 지역과 다른 주소도 제외
-        if not detail.get("addr1"):
-            continue
-        if not _is_in_expected_region(city, detail.get("addr1")):
-            continue
+
+        content_type_id = str(
+            detail.get("contenttypeid")
+            or candidate.get("contenttypeid")
+            or candidate["_search_type_id"]
+        )
+
+        if content_type_id == COURSE_CONTENT_TYPE_ID:
+            # 여행코스는 여러 장소를 넘나드는 코스라 단일 addr1이 아예 없는 경우가 대부분임.
+            # 개별 방문 장소가 아니라 "코스 구성 조회용"으로만 쓰므로(route_planner의
+            # _search_course_related_places 참고), 주소/지역 필터 없이 검색 키워드=city를
+            # 그대로 대표 주소로 남겨 나중에 도시별 조회(get_course_content_ids)에 쓴다.
+            detail["addr1"] = detail.get("addr1") or city
+        else:
+            # 다른 콘텐츠 타입은 단일 주소가 실제 위치라 동선 계산에 필요 — 없으면 제외,
+            # city 지역과 다른 주소도 제외 (동명 키워드로 엉뚱한 지역이 섞이는 문제 방지)
+            if not detail.get("addr1"):
+                continue
+            if not _is_in_expected_region(city, detail.get("addr1")):
+                continue
+
         detail["overview"] = overview
-        detail["contenttypeid"] = detail.get("contenttypeid") or candidate.get("contenttypeid") or candidate["_search_type_id"]
+        detail["contenttypeid"] = content_type_id
         details.append(detail)
 
     if not details:

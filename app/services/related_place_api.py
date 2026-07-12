@@ -36,7 +36,12 @@ def _request(operation: str, params: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _extract_items(body: Dict[str, Any]) -> List[Dict[str, Any]]:
-    items = body.get("items", {}).get("item", [])
+    # 결과가 0건이면 게이트웨이가 items를 {}가 아니라 ""(빈 문자열)로 내려줄 때가 있어 방어적으로 처리
+    # (tour_api.py의 동일 버그 수정과 같은 패턴)
+    items_field = body.get("items")
+    if not isinstance(items_field, dict):
+        return []
+    items = items_field.get("item", [])
     return items if isinstance(items, list) else [items] if items else []
 
 

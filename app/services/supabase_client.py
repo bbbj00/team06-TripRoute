@@ -158,13 +158,40 @@ def update_place_category(content_id: str, category: str) -> Dict[str, Any]:
     return response.data
 
 
-def search_similar_places(query_embedding: List[float], match_count: int = 5) -> List[Dict[str, Any]]:
+def search_similar_places(
+    query_embedding: List[float],
+    match_count: int = 5,
+    city: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     """
     사용자 취향 임베딩과 가장 비슷한 관광지를 match_places RPC로 검색합니다.
+    city를 넘기면 address에 해당 도시명이 포함된 행으로만 후보를 제한합니다.
     """
 
     response = get_client().rpc(
         "match_places",
-        {"query_embedding": query_embedding, "match_count": match_count},
+        {
+            "query_embedding": query_embedding,
+            "match_count": match_count,
+            "city_filter": city,
+        },
     ).execute()
     return response.data
+
+
+def get_course_content_ids(city: str, limit: int = 20) -> List[str]:
+    """
+    category가 '여행코스'인 행 중 address에 city가 포함된 것의 content_id 목록을 가져옵니다.
+    (Route Planner가 여행코스의 하위 장소를 연관 관광지로 추천할 때 사용)
+    """
+
+    response = (
+        get_client()
+        .table("places")
+        .select("content_id")
+        .eq("category", "여행코스")
+        .like("address", f"%{city}%")
+        .limit(limit)
+        .execute()
+    )
+    return [row["content_id"] for row in response.data]

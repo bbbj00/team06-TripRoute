@@ -83,12 +83,47 @@
       덮어씀 (README 6절 설계대로).
   - [x] "로컬만 아는 곳/사람 안 몰리는 곳" 같은 표현을 인식해서 `condition_summary`에 hidden-gem
         선호 신호(`prefer_local`)로 남기기 완료 (Solar 프롬프트 필드 추가 + Mock parser 키워드 매칭
-        fallback). **LLM이 의도는 인식하지만 실제 반영은 아직 Route Planner가 안 함 — 다음 작업.**
+        fallback). Route Planner의 `_sort_by_prefer_local()`에서 review_count 기반 정렬로 실제
+        반영까지 완료됨(아래 route_planner.py 항목 참고).
   - [x] Mock parser(Solar API 장애 시 fallback) 개선 — 원래 사용자 입력을 무시하고 강릉 고정값만
         반환하던 것을, `city`/`prefer_local`만큼은 키워드 매칭으로 실제 입력을 반영하도록 수정
-- [ ] `app/agents/route_planner.py` — 관광지 후보 생성 기본 로직
-  - [ ] `places.review_count`(Google Places 연동) 기반으로, `prefer_local` 신호가 있으면 리뷰 수
-        낮은 순 우선 정렬 또는 리뷰 수 상위 장소 제외하는 필터링 로직 추가
+- [x] `app/agents/route_planner.py` — 관광지 후보 생성 로직에 Supabase RAG 연동 완료.
+      `_search_rag_places()`가 취향 문장을 임베딩해 `match_places` RPC(도시 필터 추가, 아래 참고)로
+      해당 도시 관광지 중 유사도 top-N을 가져오고, 실패/결과 없음이면 기존 TourAPI 실시간 검색으로,
+      그것도 실패하면 Mock으로 넘어가는 3단계 fallback 구조. RAG 결과는 좌표가 없어서 선택된
+      후보만 `get_detail_common()`으로 좌표/지역코드를 보완함(`_fill_missing_place_details`).
+  - [x] `places.review_count` 기반으로 `prefer_local` 신호에 따라 필터링/정렬하는 로직 완료
+        (`_sort_by_prefer_local`) — `prefer_local=true`면 review_count 낮은 순, 아니면 높은 순.
+        review_count가 없는(Google Places 매칭 실패) 장소는 배제하지 않고 뒤쪽에 배치.
+  - [x] `match_places` Supabase 함수를 `city_filter` 파라미터 + `rating`/`review_count`/`category`/
+        `address` 반환 컬럼을 갖도록 재정의 (SQL Editor에서 수동 실행, `places` 테이블 자체는
+        안 건드림 — 함수만 교체)
+  - [x] `tests/test_route_planner.py` 작성 — 정렬 로직, taste_text 생성, RAG 경로 end-to-end
+        (mocking) 테스트 5건 추가
+  - [x] **연관 관광지 추천 로직 교체**: TourAPI `TarRlteTarService1`(T맵 내비게이션 기반 "관광지별
+        연관 관광지 정보")이 제공 기간(2024.05~2025.04) 만료로 어떤 조회를 해도 0건만 반환하는 걸
+        확인 — 대신 관광공사가 직접 큐레이션한 **여행코스**(contentTypeId=25) 데이터를 활용.
+        `tour_api.py`에 `get_detail_info()`(반복정보조회) 추가, 선택된 장소가 어떤 여행코스의
+        하위 장소로 포함돼 있는지 찾아서 같은 코스의 다른 장소를 연관 장소로 추천
+        (`_search_course_related_places`) — 실제 데이터로 매칭 성공 확인함(안목해변 → 자디마루/
+        경포호/호텔n리조트 등). 코스 구성은 자주 안 바뀌어서 `app/utils/cache.py`로 7일 캐싱 적용.
+        기존 `_search_real_related_places`/`related_place_api.py` 의존 코드는 제거함.
+  - [x] **다일차 코스 구간 제한**: 코스 하위 장소엔 "몇 일차"인지 구분이 없어서, 5일 코스인데
+        2일 여행이면 다른 날짜 구간 장소가 섞일 수 있었음 — 매칭된 장소의 코스 내 순서 기준
+        앞뒤 2개(`COURSE_NEARBY_WINDOW`)만 추천하도록 근사치 제한 추가, 라이브 검증 완료.
+  - [x] **지리적 효율성 필터링**: RAG는 취향 유사도만 보고 거리를 안 봐서, 취향 1등과 2등이
+        도시 반대편이어도 그대로 동선에 들어가는 문제 발견 — `_filter_places_within_radius()`로
+        하버사인 거리 계산해 취향 1등 기준 15km(`MAX_CANDIDATE_DISTANCE_KM`) 이내 후보만
+        순차 채택하도록 수정.
+  - [x] **여행코스 데이터 보강**: 도시당 코스가 너무 적어(경주·전주·서울 0건) 연관 장소 추천
+        풀이 좁던 문제 — `ingest_city()`가 여행코스(addr1 없는 경우 대부분)를 주소 필수 필터로
+        다 걸러내던 버그를 고치고 재수집, 10개 도시 총 96건으로 보강 완료
+        (`docs/step3_agent_report.md` 표 참고).
+  - [x] **연관 장소도 거리 필터 적용**: 처음엔 `_filter_places_within_radius()`가 RAG 후보
+        (`candidate_places`)에만 적용되고 코스 매칭으로 붙는 `related_places`는 거리 검증 없이
+        그대로 합쳐지는 걸 재점검 중 발견 — `anchor_places` 파라미터를 추가해 이미 확정된
+        candidate_places 군집 기준으로 related_places도 15km 이내인지 걸러지도록 수정.
+        테스트로 검증(anchor 기준 먼 곳 배제 확인).
 - [ ] `app/agents/financial.py` — 기본 비용 계산 로직
 - [ ] `app/graph/nodes.py` — 각 Agent를 LangGraph 노드로 래핑
 - [ ] `app/graph/edges.py` — Agent 실행 순서 및 조건 분기 정의
@@ -107,9 +142,11 @@
 - [x] `app/rag/vector_store.py` — Supabase pgvector 테이블 생성 및 임베딩 저장
       (`ingest_city`/`ingest_cities`), category·축제 개최기간(`event_start_date`/`event_end_date`)·
       Google Places 평점(`rating`/`review_count`) 백필 함수까지 포함
-- [ ] `app/rag/retriever.py` — 사용자 취향 문장 임베딩 → 유사도 검색
-- [ ] Coordinator/Route Planner에서 RAG 검색 결과 연동
-- [ ] RAG 유사도 점수를 Route Planner 추천 로직에 반영
+- [x] `app/rag/retriever.py` — 사용자 취향 문장 임베딩 → 유사도 검색 (`city` 필터 파라미터 추가)
+- [x] Route Planner에서 RAG 검색 결과 연동 완료 (`_search_rag_places`, Step 3 참고)
+- [x] RAG 유사도 점수를 Route Planner 추천 로직에 반영 — `similarity`는 결과에 포함되지만
+      최종 정렬 기준은 review_count(`prefer_local`) 우선. RAG는 "취향에 맞는 후보 풀"을 좁히는
+      역할이고, 그 안에서 순서는 review_count로 정함
 - [x] **평점/리뷰수 보강**: TourAPI/카카오/네이버 모두 별점·리뷰 데이터가 없어서 Google Places
       API(New)를 추가 연동함 (`app/services/google_places_api.py`). 이름 텍스트 검색만으로는
       전혀 무관한 곳이 매칭되는 사고가 있어(예시는 api_notes.md 참고), TourAPI 좌표(mapx/mapy)
@@ -121,8 +158,14 @@
 
 - [ ] `app/utils/transport_rules.py` — 대중교통 휴리스틱 (시간 ×1.5~2.0, 거리 기반 요금)
 - [ ] `app/utils/cost_rules.py` — 식비·카페비·숙박비·입장료 추정 규칙
-- [ ] Route Planner — 카카오 API 기반 구간별 이동시간 계산 및 State 기록
-- [ ] Route Planner — 하루 일정 과밀도 체크 (일정 강도·계절 반영)
+- [x] Route Planner — 카카오 API 기반 구간별 이동시간 계산 및 State 기록 (`_build_real_routes`,
+      `route_summary`/`route_segments`에 기록됨 — 팀원 PR로 이미 구현돼 있었음)
+- [x] Route Planner — 하루 일정 과밀도 체크 (일정 강도·계절 반영) 완료.
+      `_check_daily_density()`: 하루 단위 구간 이동시간 합이 일정 강도별 기준(여유
+      180분/빡빡 300분)을 넘으면 경고. `_build_time_slots()`에 `season` 파라미터 추가 —
+      겨울이면 일조시간이 짧다고 보고 저녁 슬롯을 제외(예: 여유+1일 기준 여름 3슬롯 →
+      겨울 2슬롯), 관련 경고 문구도 추가. 라이브 검증 완료(강릉 1박2일: 여름 5슬롯 vs
+      겨울 4슬롯). 테스트 5건 추가.
 - [ ] Financial Agent — 이동수단별 비용 분기 (자차/렌터카/택시/대중교통)
 - [ ] Financial Agent — TourAPI usefee 비정형 텍스트 파싱 (Upstage 구조화 활용)
 - [ ] Financial Agent — State의 route_segments를 읽어 총 예상 비용 산정

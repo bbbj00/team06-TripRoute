@@ -3,10 +3,16 @@ from app.agents.react_loop import run_triproute_react_loop
 
 
 def test_react_loop_gangneung_mock_scenario(monkeypatch):
-    # TourAPI 호출 실패를 강제로 만들어 Mock fallback을 검증
+    # RAG 검색과 TourAPI 호출을 모두 실패하게 만들어 Mock fallback을 검증
+    # (RAG가 우선 시도되므로, RAG까지 같이 막아야 TourAPI 실패 경로로 넘어감)
     def raise_tour_api_error(*args, **kwargs):
         raise RuntimeError("테스트용 TourAPI 실패")
 
+    monkeypatch.setattr(
+        route_planner,
+        "retrieve_places_by_taste",
+        lambda *args, **kwargs: [],
+    )
     monkeypatch.setattr(
         route_planner,
         "search_keyword",

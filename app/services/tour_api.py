@@ -111,3 +111,20 @@ def get_detail_intro(content_id: str, content_type_id: str) -> Dict[str, Any]:
     body = _request("detailIntro2", params)
     items = _extract_items(body)
     return items[0] if items else {}
+
+
+def get_detail_info(content_id: str, content_type_id: str) -> List[Dict[str, Any]]:
+    """
+    반복정보(하위 목록)를 조회합니다. 콘텐츠 타입마다 반환 항목이 다르다.
+    예) 여행코스(25): 코스를 구성하는 하위 장소 목록(subcontentid/subname/subdetailoverview 등)
+        숙박(32): 객실별 요금 정보(roomtitle/roomoffseasonminfee1 등)
+    detailIntro2와 달리 결과가 여러 건(리스트)으로 온다.
+    """
+
+    params = {
+        "contentId": content_id,
+        "contentTypeId": content_type_id,
+    }
+
+    body = _request("detailInfo2", params)
+    return _extract_items(body)
