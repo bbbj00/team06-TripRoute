@@ -75,10 +75,17 @@
 ## Step 3. State 및 Agent 기본 흐름 구현
 
 - [x] `app/core/state.py` — `TripRouteState` TypedDict 정의 (README 9절 필드 기준)
-- [ ] `app/core/prompts.py` — Agent별 프롬프트 템플릿 관리
-- [ ] `app/agents/coordinator.py` — 자연어 입력 분석 및 조건 추출 (도시·계절·기간·취향·일정강도·이동수단·인원수)
-  - [ ] "로컬만 아는 곳/사람 안 몰리는 곳" 같은 표현을 인식해서 `condition_summary`에 hidden-gem
-        선호 신호(예: `prefer_local`)로 남기기 — LLM이 의도는 인식하지만 실제 반영은 Route Planner가 해야 함
+- [x] `app/core/prompts.py` — Agent별 프롬프트 템플릿 관리. Coordinator의 Solar 파싱 프롬프트를
+      `upstage_client.py`에서 분리해 `COORDINATOR_PARSE_SYSTEM_PROMPT`로 이관 완료. Route
+      Planner/Financial은 아직 자체 LLM 프롬프트가 없어서 추가할 게 생기면 이 파일에 계속 보탤 것
+- [x] `app/agents/coordinator.py` — 자연어 입력 분석 및 조건 추출 (도시·계절·기간·취향·일정강도).
+      `이동수단`/`인원수`는 자연어 추출 대상이 아니라 Gradio UI의 체크박스/숫자 입력값을 그대로 받아
+      덮어씀 (README 6절 설계대로).
+  - [x] "로컬만 아는 곳/사람 안 몰리는 곳" 같은 표현을 인식해서 `condition_summary`에 hidden-gem
+        선호 신호(`prefer_local`)로 남기기 완료 (Solar 프롬프트 필드 추가 + Mock parser 키워드 매칭
+        fallback). **LLM이 의도는 인식하지만 실제 반영은 아직 Route Planner가 안 함 — 다음 작업.**
+  - [x] Mock parser(Solar API 장애 시 fallback) 개선 — 원래 사용자 입력을 무시하고 강릉 고정값만
+        반환하던 것을, `city`/`prefer_local`만큼은 키워드 매칭으로 실제 입력을 반영하도록 수정
 - [ ] `app/agents/route_planner.py` — 관광지 후보 생성 기본 로직
   - [ ] `places.review_count`(Google Places 연동) 기반으로, `prefer_local` 신호가 있으면 리뷰 수
         낮은 순 우선 정렬 또는 리뷰 수 상위 장소 제외하는 필터링 로직 추가
