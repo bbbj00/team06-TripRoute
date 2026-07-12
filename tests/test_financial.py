@@ -62,7 +62,6 @@ def test_build_cost_summary_total():
     assert summary["total"] > summary["transport"]
     assert summary["currency"] == "KRW"
 
-    from app.utils.transport_rules import recommend_vehicle_by_people, estimate_rental_car_cost
 
 
 def test_recommend_vehicle_by_people():
