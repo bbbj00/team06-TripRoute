@@ -2,13 +2,16 @@ import time
 from typing import Any, Dict, List, Optional
 
 from app.rag.embedder import embed_place_overviews
+from app.services.google_places_api import GooglePlacesAPIError, get_rating_and_review_count
 from app.services.supabase_client import (
     get_existing_content_ids,
     get_festivals_missing_event_dates,
     get_places_missing_category,
+    get_places_missing_rating,
     insert_place,
     update_place_category,
     update_place_event_dates,
+    update_place_rating,
 )
 from app.services.tour_api import TourAPIError, get_detail_common, get_detail_intro, search_keyword
 
@@ -71,6 +74,13 @@ def _parse_tourapi_date(value: Optional[str]) -> Optional[str]:
     if not value or len(value) != 8 or not value.isdigit():
         return None
     return f"{value[0:4]}-{value[4:6]}-{value[6:8]}"
+
+
+def _to_float(value: Optional[Any]) -> Optional[float]:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _is_in_expected_region(city: str, address: Optional[str]) -> bool:
@@ -164,6 +174,19 @@ def ingest_city(
                 except TourAPIError as e:
                     print(f"  [경고] {city}/{detail['contentid']} 개최기간 조회 실패: {e}")
 
+            rating = None
+            review_count = None
+            try:
+                rating_info = get_rating_and_review_count(
+                    detail.get("title", ""),
+                    lat=_to_float(detail.get("mapy")),
+                    lng=_to_float(detail.get("mapx")),
+                )
+                rating = rating_info["rating"]
+                review_count = rating_info["review_count"]
+            except GooglePlacesAPIError as e:
+                print(f"  [경고] {city}/{detail['contentid']} 평점 조회 실패: {e}")
+
             insert_place(
                 content_id=detail["contentid"],
                 title=detail.get("title", ""),
@@ -173,6 +196,8 @@ def ingest_city(
                 category=content_type_id_to_category(detail.get("contenttypeid")),
                 event_start_date=event_start_date,
                 event_end_date=event_end_date,
+                rating=rating,
+                review_count=review_count,
             )
             saved.append({"title": detail.get("title"), "content_id": detail["contentid"]})
 
@@ -247,6 +272,55 @@ def backfill_festival_dates() -> Dict[str, int]:
             print(f"  진행: {i + 1}/{len(targets)}")
 
         update_place_event_dates(content_id, event_start_date, event_end_date)
+        updated += 1
+
+    print(f"백필 완료: {updated}건 갱신, {failed}건 실패")
+    return {"updated": updated, "failed": failed}
+
+
+def backfill_ratings() -> Dict[str, int]:
+    """
+    rating이 비어있는 기존 places 행에 대해 TourAPI로 좌표(mapx/mapy)를 다시 조회하고,
+    그 좌표로 Google Places를 검색해 rating/review_count를 채워넣습니다.
+    """
+
+    targets = get_places_missing_rating(limit=5000)
+    print(f"평점 백필 대상: {len(targets)}건")
+
+    updated = 0
+    failed = 0
+    for i, row in enumerate(targets):
+        content_id = row["content_id"]
+        try:
+            detail = get_detail_common(content_id)
+        except TourAPIError as e:
+            print(f"  [경고] {content_id} 좌표 조회 실패: {e}")
+            failed += 1
+            time.sleep(1)  # rate limit(429) 대비, 실패 시 조금 더 쉬어감
+            continue
+
+        title = row.get("title") or detail.get("title", "")
+        try:
+            rating_info = get_rating_and_review_count(
+                title,
+                lat=_to_float(detail.get("mapy")),
+                lng=_to_float(detail.get("mapx")),
+            )
+        except GooglePlacesAPIError as e:
+            print(f"  [경고] {content_id} Google Places 조회 실패: {e}")
+            failed += 1
+            time.sleep(1)  # rate limit(429) 재시도 소진 후에도 실패하면 여기서도 쉬어감
+            continue
+
+        if rating_info["rating"] is None:
+            failed += 1
+            continue
+
+        time.sleep(0.2)  # TourAPI rate limit 방지용 호출 간 딜레이
+        if (i + 1) % 100 == 0:
+            print(f"  진행: {i + 1}/{len(targets)}")
+
+        update_place_rating(content_id, rating_info["rating"], rating_info["review_count"])
         updated += 1
 
     print(f"백필 완료: {updated}건 갱신, {failed}건 실패")
