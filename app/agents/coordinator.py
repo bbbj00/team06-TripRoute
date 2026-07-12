@@ -124,6 +124,7 @@ def run_triproute_coordinator(
             "schedule_intensity": parsed.get(
                 "schedule_intensity"
             ),
+            "prefer_local": parsed.get("prefer_local", False),
             "transport_mode": transport_mode,
             "people_count": people_count,
             "parser": parsed.get("_parser", "unknown"),
