@@ -8,7 +8,10 @@ from typing import Any, Dict, List
 from openai import OpenAI
 
 from app.core.config import settings
-from app.core.prompts import COORDINATOR_PARSE_SYSTEM_PROMPT
+from app.core.prompts import (
+    COORDINATOR_PARSE_SYSTEM_PROMPT,
+    FINANCIAL_USEFEE_PARSE_SYSTEM_PROMPT,
+)
 
 
 BASE_URL = "https://api.upstage.ai/v1"
@@ -25,6 +28,8 @@ DEFAULT_PARSE_RESULT = {
     "travel_style": ["바다", "감성 카페", "먹거리"],
     "schedule_intensity": "여유로운 일정",
     "prefer_local": False,
+    "prefer_budget": False,
+    "is_peak_season": True,
 }
 
 # "로컬만 아는 곳", "사람 안 몰리는 곳" 같은 hidden-gem 선호 표현 감지용 키워드.
@@ -46,6 +51,40 @@ PREFER_LOCAL_KEYWORDS = [
 
 def _detect_prefer_local(user_input: str) -> bool:
     return any(keyword in user_input for keyword in PREFER_LOCAL_KEYWORDS)
+
+
+# "가성비", "저렴하게" 같은 예산 중시 표현 감지용 키워드 (Mock parser fallback용, prefer_local과 동일한 이유)
+PREFER_BUDGET_KEYWORDS = [
+    "가성비",
+    "저렴",
+    "알뜰",
+    "돈 아끼",
+    "저가",
+    "budget",
+]
+
+
+def _detect_prefer_budget(user_input: str) -> bool:
+    return any(keyword in user_input for keyword in PREFER_BUDGET_KEYWORDS)
+
+
+# 국내 숙박 성수기 시즌 감지용 키워드 (Mock parser fallback용). Solar는 날짜/시기를
+# 문맥으로 판단하지만, Mock은 규칙 기반이라 정교한 날짜 계산 대신 키워드로만 근사한다.
+PEAK_SEASON_KEYWORDS = [
+    "여름",
+    "성수기",
+    "휴가철",
+    "명절",
+    "설날",
+    "추석",
+    "연휴",
+    "크리스마스",
+    "연말",
+]
+
+
+def _detect_peak_season(user_input: str) -> bool:
+    return any(keyword in user_input for keyword in PEAK_SEASON_KEYWORDS)
 
 
 # 실제 관광지 데이터(Supabase places 테이블)를 확보해둔 도시만 감지 대상으로 함
@@ -128,13 +167,16 @@ def parse_user_input_mock(user_input: str) -> dict[str, Any]:
     Solar API 호출 실패 시 사용하는 Mock 입력 파서입니다.
 
     season/duration/travel_style/schedule_intensity는 고정 데모 값을 그대로 쓰지만,
-    city와 prefer_local만큼은 키워드 매칭으로 실제 user_input을 반영합니다.
+    city/prefer_local/prefer_budget/is_peak_season만큼은 키워드 매칭으로 실제
+    user_input을 반영합니다.
     """
 
     return {
         **DEFAULT_PARSE_RESULT,
         "city": _detect_city(user_input) or DEFAULT_PARSE_RESULT["city"],
         "prefer_local": _detect_prefer_local(user_input),
+        "prefer_budget": _detect_prefer_budget(user_input),
+        "is_peak_season": _detect_peak_season(user_input),
         "_parser": "mock",
     }
 
@@ -191,6 +233,8 @@ def _normalize_parse_result(
             or DEFAULT_PARSE_RESULT["schedule_intensity"]
         ),
         "prefer_local": bool(data.get("prefer_local", False)),
+        "prefer_budget": bool(data.get("prefer_budget", False)),
+        "is_peak_season": bool(data.get("is_peak_season", False)),
         "_parser": "solar",
     }
 
@@ -247,3 +291,45 @@ def parse_trip_request(
         ]
 
         return fallback, warnings
+
+
+def parse_usefee_amount(usefee_text: str) -> int | None:
+    """
+    TourAPI usefee(이용요금) 비정형 텍스트에서 성인 1인 기준 대표 금액을 추출합니다.
+    무료면 0, 특정할 수 없으면 None을 반환합니다. 파싱 실패(API 오류 등) 시에도 None을
+    반환해서 호출부가 fallback 추정치를 쓰도록 합니다.
+    """
+
+    if not usefee_text or not usefee_text.strip():
+        return None
+
+    model = os.getenv("UPSTAGE_MODEL", CHAT_MODEL)
+
+    try:
+        response = _client().chat.completions.create(
+            model=model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": FINANCIAL_USEFEE_PARSE_SYSTEM_PROMPT,
+                },
+                {
+                    "role": "user",
+                    "content": usefee_text,
+                },
+            ],
+            temperature=0,
+        )
+        content = response.choices[0].message.content or ""
+        data = _extract_json(content)
+    except Exception:
+        return None
+
+    amount = data.get("amount")
+    if amount is None:
+        return None
+
+    try:
+        return int(amount)
+    except (TypeError, ValueError):
+        return None

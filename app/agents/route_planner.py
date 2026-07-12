@@ -5,6 +5,7 @@ import re
 from typing import Any, Dict, List, Tuple
 
 from app.rag.retriever import retrieve_places_by_taste
+from app.rag.vector_store import content_type_id_to_category
 from app.services.kakao_mobility import get_route, summarize_route
 from app.services.supabase_client import get_course_content_ids
 from app.services.tour_api import (
@@ -15,12 +16,16 @@ from app.services.tour_api import (
 )
 from app.tools.mock_tools import run_tool
 from app.utils.cache import cached_call
+from app.utils.cost_rules import estimate_lodging_fee_per_night
 from app.utils.transport_rules import estimate_public_transport_time
 
 COURSE_CONTENT_TYPE_ID = "25"
 # 코스 하위 장소는 "몇 일차"인지 구분이 없어서, 매칭된 장소 기준 코스 내 순서(subnum)로
 # 이 범위 안에 있는 것만 연관 장소로 추천함 (며칠짜리 코스든 상관없이 먼 구간이 섞이는 것 방지)
 COURSE_NEARBY_WINDOW = 2
+
+LODGING_CATEGORY = "숙박"
+LODGING_CONTENT_TYPE_ID = "32"
 
 EARTH_RADIUS_KM = 6371.0
 # RAG는 취향 유사도만 보고 거리는 전혀 고려하지 않아서, 취향 1등이 해변이고 2등이 반대편
@@ -247,6 +252,8 @@ def _fill_missing_place_details(places: List[Place]) -> List[Place]:
     """
     RAG 결과는 좌표/지역코드가 없으므로, 동선 계산과 연관 관광지 조회에 필요한
     mapx/mapy(좌표)·lDongRegnCd/lDongSignguCd(지역코드)를 TourAPI로 보완한다.
+    코스 하위 장소(_normalize_course_sub_place)는 category도 없어서 같이 채운다
+    (Financial Agent가 카테고리로 usefee/숙박 요금 조회 대상을 판단하는 데 필요).
     """
 
     for place in places:
@@ -272,6 +279,8 @@ def _fill_missing_place_details(places: List[Place]) -> List[Place]:
             place["address"] = detail.get("addr1") or ""
         if not place.get("image_url"):
             place["image_url"] = detail.get("firstimage") or ""
+        if not place.get("category"):
+            place["category"] = content_type_id_to_category(detail.get("contenttypeid"))
 
     return places
 
@@ -313,6 +322,120 @@ def _search_rag_places(
     )
 
     return _sort_by_prefer_local(places, prefer_local)
+
+
+def _sort_by_rating_desc(places: List[Place]) -> List[Place]:
+    """
+    rating이 높은 순으로 정렬한다. rating이 없는(Google Places 매칭 실패) 곳은
+    배제하지 않고 뒤쪽에 배치한다 (_sort_by_prefer_local과 동일한 None 처리 방식).
+    """
+
+    def sort_key(place: Place) -> Tuple[int, float]:
+        rating = place.get("rating")
+        if rating is None:
+            return (1, 0.0)
+        return (0, -rating)
+
+    return sorted(places, key=sort_key)
+
+
+def _fetch_lodging_fee(
+    content_id: str,
+    people_count: int,
+    use_peak_season: bool,
+) -> int | None:
+    """
+    숙박 후보의 실제 1박 요금을 조회한다. 계산 로직(인원수/성수기 반영)은
+    cost_rules.estimate_lodging_fee_per_night에 있고 — Financial Agent와 동일한
+    로직을 재사용해서 선택 시점과 최종 청구 시점의 판단이 어긋나지 않게 함 —
+    여기서는 TourAPI 조회 + 캐싱만 담당한다. 캐시 namespace/params를 Financial
+    Agent와 동일하게 맞춰서 같은 응답을 재사용한다(중복 호출 방지).
+    """
+
+    try:
+        rooms = cached_call(
+            namespace="detail_info_lodging",
+            params={"content_id": content_id, "content_type_id": LODGING_CONTENT_TYPE_ID},
+            fetch_fn=lambda: get_detail_info(content_id, LODGING_CONTENT_TYPE_ID),
+            ttl_seconds=60 * 60 * 24,
+        )
+    except TourAPIError:
+        return None
+
+    return estimate_lodging_fee_per_night(rooms, people_count, use_peak_season)
+
+
+def _search_lodging_place(
+    city: str,
+    anchor_places: List[Place],
+    prefer_budget: bool = False,
+    people_count: int = 1,
+    is_peak_season: bool = False,
+) -> Place | None:
+    """
+    1박 이상 여행일 때 숙박 후보를 하나 골라서 반환한다. RAG로 "숙박/호텔" 관련
+    장소를 검색한 뒤, 이미 선택된 관광지 군집(anchor_places)과 15km 이내인 곳들 중
+    고른다 — prefer_budget(Coordinator가 "가성비" 같은 예산 중시 의도를 인식해서
+    넘기는 신호)이 켜져 있으면 실제 요금이 가장 저렴한 곳을, 아니면 rating이 가장
+    높은 곳을 우선한다.
+
+    정렬 후에는 그중 **실제 요금 데이터가 있는 첫 번째 후보**를 우선 선택한다 —
+    예를 들어 평점 1등이 TourAPI에 객실 요금을 등록 안 해뒀으면, 정보 없는 곳
+    대신 요금 데이터가 있는 다음 순위를 골라서 Financial Agent가 추정치가 아닌
+    실측값을 쓸 수 있게 한다(동점/전부 데이터 없음이면 원래 1등을 그대로 씀).
+    후보가 없으면 None을 반환해 Financial Agent가 기본 추정치로 대체하게 한다.
+    """
+
+    try:
+        results = retrieve_places_by_taste(
+            "편안하고 접근성 좋은 숙박 시설, 호텔, 펜션",
+            match_count=20,
+            city=city,
+        )
+    except Exception:
+        return None
+
+    lodging_places = _deduplicate_places(
+        [
+            _normalize_rag_place(item, f"{city} 숙박 후보입니다.")
+            for item in results
+            if item.get("category") == LODGING_CATEGORY
+        ]
+    )
+    if not lodging_places:
+        return None
+
+    lodging_places = _fill_missing_place_details(lodging_places)
+    lodging_places = _filter_places_within_radius(
+        lodging_places,
+        anchor_places=anchor_places,
+    )
+    if not lodging_places:
+        return None
+
+    fees_by_content_id = {
+        place["content_id"]: _fetch_lodging_fee(place["content_id"], people_count, is_peak_season)
+        for place in lodging_places
+        if place.get("content_id")
+    }
+
+    if prefer_budget:
+        ranked = sorted(
+            lodging_places,
+            key=lambda place: (
+                fee
+                if (fee := fees_by_content_id.get(place.get("content_id"))) is not None
+                else float("inf")
+            ),
+        )
+    else:
+        ranked = _sort_by_rating_desc(lodging_places)
+
+    for place in ranked:
+        if fees_by_content_id.get(place.get("content_id")) is not None:
+            return place
+
+    return ranked[0]
 
 
 def _deduplicate_places(places: List[Place]) -> List[Place]:
@@ -863,12 +986,13 @@ def build_route_plan(
     → 일정 생성
     → 실패 시 Mock fallback
     """
-    del people_count
 
     city = str(parsed.get("city") or "강릉")
     duration = str(parsed.get("duration") or "1박 2일")
     travel_style = list(parsed.get("travel_style") or [])
     prefer_local = bool(parsed.get("prefer_local", False))
+    prefer_budget = bool(parsed.get("prefer_budget", False))
+    is_peak_season = bool(parsed.get("is_peak_season", False))
     schedule_intensity = str(
         parsed.get("schedule_intensity") or "보통"
     )
@@ -963,6 +1087,20 @@ def build_route_plan(
             "겨울철은 일조시간이 짧아 저녁 시간대 일정을 제외했습니다."
         )
 
+    # 1박 이상이면 숙박 후보를 명시적으로 하나 골라둔다 (RAG가 우연히 숙박을 관광지
+    # 후보로 뽑아주길 기다리지 않고, Financial Agent가 실제 요금을 조회할 대상을 보장함)
+    lodging_place = (
+        _search_lodging_place(
+            city=city,
+            anchor_places=candidate_places,
+            prefer_budget=prefer_budget,
+            people_count=people_count,
+            is_peak_season=is_peak_season,
+        )
+        if travel_days > 1
+        else None
+    )
+
     return {
         "tourist_spots": candidate_places,
         "candidate_places": candidate_places,
@@ -972,6 +1110,9 @@ def build_route_plan(
         "route_summary": route_summary,
         "route_segments": route_summary,
         "daily_schedule": daily_schedule,
+        "lodging_place": lodging_place,
+        "season": season,
+        "is_peak_season": is_peak_season,
         "warnings": related_warnings + route_warnings + density_warnings,
         "data_source": data_source,
     }

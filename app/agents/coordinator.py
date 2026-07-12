@@ -125,6 +125,8 @@ def run_triproute_coordinator(
                 "schedule_intensity"
             ),
             "prefer_local": parsed.get("prefer_local", False),
+            "prefer_budget": parsed.get("prefer_budget", False),
+            "is_peak_season": parsed.get("is_peak_season", False),
             "transport_mode": transport_mode,
             "people_count": people_count,
             "parser": parsed.get("_parser", "unknown"),

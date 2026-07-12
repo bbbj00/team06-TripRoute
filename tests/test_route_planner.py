@@ -3,10 +3,13 @@ from app.agents.route_planner import (
     _build_taste_text,
     _build_time_slots,
     _check_daily_density,
+    _fetch_lodging_fee,
     _filter_places_within_radius,
     _haversine_km,
     _normalize_rag_place,
+    _search_lodging_place,
     _sort_by_prefer_local,
+    _sort_by_rating_desc,
 )
 
 
@@ -336,3 +339,172 @@ def test_check_daily_density_packed_has_higher_threshold():
 
     assert len(relaxed_warnings) == 1
     assert packed_warnings == []
+
+
+def test_sort_by_rating_desc_places_missing_rating_last():
+    places = [
+        _normalize_rag_place({"title": "없음"}, "reason"),
+        _normalize_rag_place({"title": "5점", "rating": 5}, "reason"),
+        _normalize_rag_place({"title": "3점", "rating": 3}, "reason"),
+    ]
+
+    result = _sort_by_rating_desc(places)
+
+    assert [p["name"] for p in result] == ["5점", "3점", "없음"]
+
+
+def test_fetch_lodging_fee_ignores_zero_registered_fee(monkeypatch):
+    monkeypatch.setattr(
+        route_planner,
+        "cached_call",
+        lambda namespace, params, fetch_fn, ttl_seconds=None: fetch_fn(),
+    )
+    monkeypatch.setattr(
+        route_planner,
+        "get_detail_info",
+        lambda content_id, content_type_id: [
+            {"roommaxcount": "2", "roomoffseasonminfee1": "0"},
+            {"roommaxcount": "2", "roomoffseasonminfee1": "30000"},
+        ],
+    )
+
+    assert _fetch_lodging_fee("test-content-id", people_count=2, use_peak_season=False) == 30000
+
+
+def test_search_lodging_place_picks_highest_rating_by_default(monkeypatch):
+    monkeypatch.setattr(
+        route_planner,
+        "retrieve_places_by_taste",
+        lambda *args, **kwargs: [
+            {
+                "content_id": "a", "title": "A호텔", "category": "숙박",
+                "rating": 3, "review_count": 10, "address": "강원특별자치도 강릉시",
+            },
+            {
+                "content_id": "b", "title": "B호텔", "category": "숙박",
+                "rating": 5, "review_count": 20, "address": "강원특별자치도 강릉시",
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        route_planner,
+        "get_detail_common",
+        lambda content_id: {
+            "mapx": "128.9", "mapy": "37.7",
+            "lDongRegnCd": "51", "lDongSignguCd": "150",
+            "addr1": "강원특별자치도 강릉시", "contenttypeid": "32",
+        },
+    )
+    monkeypatch.setattr(
+        route_planner,
+        "cached_call",
+        lambda namespace, params, fetch_fn, ttl_seconds=None: fetch_fn(),
+    )
+    monkeypatch.setattr(
+        route_planner,
+        "get_detail_info",
+        lambda content_id, content_type_id: [],  # 둘 다 요금 정보 없음 -> rating 기준으로만 판단
+    )
+
+    anchor_places = [{"latitude": 37.7, "longitude": 128.9}]
+
+    result = _search_lodging_place(city="강릉", anchor_places=anchor_places)
+
+    assert result["name"] == "B호텔"
+
+
+def test_search_lodging_place_prefers_candidate_with_real_fee_data(monkeypatch):
+    # B호텔이 평점은 더 높지만 요금 데이터가 없고, A호텔은 평점은 낮아도 실제 요금이 있음
+    # -> Financial Agent가 추정치 대신 실측값을 쓸 수 있도록 A호텔을 골라야 함
+    monkeypatch.setattr(
+        route_planner,
+        "retrieve_places_by_taste",
+        lambda *args, **kwargs: [
+            {
+                "content_id": "a", "title": "A호텔", "category": "숙박",
+                "rating": 3, "review_count": 10, "address": "강원특별자치도 강릉시",
+            },
+            {
+                "content_id": "b", "title": "B호텔", "category": "숙박",
+                "rating": 5, "review_count": 20, "address": "강원특별자치도 강릉시",
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        route_planner,
+        "get_detail_common",
+        lambda content_id: {
+            "mapx": "128.9", "mapy": "37.7",
+            "lDongRegnCd": "51", "lDongSignguCd": "150",
+            "addr1": "강원특별자치도 강릉시", "contenttypeid": "32",
+        },
+    )
+    monkeypatch.setattr(
+        route_planner,
+        "cached_call",
+        lambda namespace, params, fetch_fn, ttl_seconds=None: fetch_fn(),
+    )
+    monkeypatch.setattr(
+        route_planner,
+        "get_detail_info",
+        lambda content_id, content_type_id: (
+            [{"roommaxcount": "2", "roomoffseasonminfee1": "50000"}] if content_id == "a"
+            else []  # B호텔은 요금 정보 없음
+        ),
+    )
+
+    anchor_places = [{"latitude": 37.7, "longitude": 128.9}]
+
+    result = _search_lodging_place(city="강릉", anchor_places=anchor_places)
+
+    assert result["name"] == "A호텔"
+
+
+def test_search_lodging_place_picks_cheapest_when_prefer_budget(monkeypatch):
+    monkeypatch.setattr(
+        route_planner,
+        "retrieve_places_by_taste",
+        lambda *args, **kwargs: [
+            {
+                "content_id": "a", "title": "A호텔", "category": "숙박",
+                "rating": 5, "review_count": 10, "address": "강원특별자치도 강릉시",
+            },
+            {
+                "content_id": "b", "title": "B호텔", "category": "숙박",
+                "rating": 3, "review_count": 20, "address": "강원특별자치도 강릉시",
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        route_planner,
+        "get_detail_common",
+        lambda content_id: {
+            "mapx": "128.9", "mapy": "37.7",
+            "lDongRegnCd": "51", "lDongSignguCd": "150",
+            "addr1": "강원특별자치도 강릉시", "contenttypeid": "32",
+        },
+    )
+    monkeypatch.setattr(
+        route_planner,
+        "cached_call",
+        lambda namespace, params, fetch_fn, ttl_seconds=None: fetch_fn(),
+    )
+    monkeypatch.setattr(
+        route_planner,
+        "get_detail_info",
+        lambda content_id, content_type_id: (
+            [{"roommaxcount": "2", "roomoffseasonminfee1": "80000"}] if content_id == "a"
+            else [{"roommaxcount": "2", "roomoffseasonminfee1": "30000"}]
+        ),
+    )
+
+    anchor_places = [{"latitude": 37.7, "longitude": 128.9}]
+
+    result = _search_lodging_place(
+        city="강릉",
+        anchor_places=anchor_places,
+        prefer_budget=True,
+    )
+
+    # rating은 A가 더 높지만, prefer_budget이면 실제 요금이 더 저렴한 B를 골라야 함
+    assert result["name"] == "B호텔"

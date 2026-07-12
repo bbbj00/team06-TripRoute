@@ -87,6 +87,9 @@
         반영까지 완료됨(아래 route_planner.py 항목 참고).
   - [x] Mock parser(Solar API 장애 시 fallback) 개선 — 원래 사용자 입력을 무시하고 강릉 고정값만
         반환하던 것을, `city`/`prefer_local`만큼은 키워드 매칭으로 실제 입력을 반영하도록 수정
+  - [x] **prefer_budget**("가성비" 등 예산 중시 표현) / **is_peak_season**(성수기 여행 여부)
+        신호 추가 — `prefer_local`과 동일한 패턴(Solar 프롬프트 필드 + Mock 키워드 fallback).
+        route_planner.py의 숙박 선택 로직과 financial.py의 성수기 요금 반영에서 사용.
 - [x] `app/agents/route_planner.py` — 관광지 후보 생성 로직에 Supabase RAG 연동 완료.
       `_search_rag_places()`가 취향 문장을 임베딩해 `match_places` RPC(도시 필터 추가, 아래 참고)로
       해당 도시 관광지 중 유사도 top-N을 가져오고, 실패/결과 없음이면 기존 TourAPI 실시간 검색으로,
@@ -124,7 +127,23 @@
         그대로 합쳐지는 걸 재점검 중 발견 — `anchor_places` 파라미터를 추가해 이미 확정된
         candidate_places 군집 기준으로 related_places도 15km 이내인지 걸러지도록 수정.
         테스트로 검증(anchor 기준 먼 곳 배제 확인).
-- [ ] `app/agents/financial.py` — 기본 비용 계산 로직
+- [x] `app/agents/financial.py` — 비용 계산 로직에 실측 데이터 반영 완료.
+  - [x] **입장료(admission_cost)**: TourAPI `detailIntro2`의 usefee(비정형 텍스트)를
+        `parse_usefee_amount()`(Upstage 구조화 추출, `FINANCIAL_USEFEE_PARSE_SYSTEM_PROMPT`)로
+        성인 1인 요금만 뽑아냄. 무료/파싱불가는 구분해서 처리, 실패 시 기본값(5,000원) 대체.
+  - [x] **숙박비 선택 보장**: Route Planner가 1박 이상이면 `_search_lodging_place()`로 숙박
+        후보를 명시적으로 하나 골라 `route_plan["lodging_place"]`에 담아 넘김 (RAG가 우연히
+        골라주길 기다리지 않음). 이미 선택된 관광지 군집과 15km 이내, prefer_budget이면
+        실제 요금 최저가, 아니면 rating 최고 순으로 선택 — 정렬 후 그중 **실제 요금 데이터가
+        있는 첫 후보**를 우선 선택(동점/전부 없음이면 원 순위 유지).
+  - [x] **숙박비(lodging_cost) 실측**: TourAPI `detailInfo2`(객실 목록)에서 인원수(roommaxcount
+        기준 수용 가능 객실, 초과 시 객실 여러 개로 근사)와 성수기(`is_peak_season`) 반영해서
+        1박 요금 계산 (`app/utils/cost_rules.py`의 `estimate_lodging_fee_per_night` 등 —
+        Route Planner의 숙박 선택 시점과 동일 로직 재사용). 요금 필드가 "0"으로 등록된
+        데이터 오류 케이스 발견 후 `to_positive_int()`로 방어 처리.
+  - [x] 교통비 계산 시 하드코딩됐던 `travel_days=2`를 daily_schedule에서 실제 일수를 세도록 수정.
+  - [x] `tests/test_financial.py`/`tests/test_route_planner.py`에 usefee 파싱, 인원수별 객실
+        수용 여부, 성수기 요금, 0원 데이터 방어, 실요금 우선 선택 테스트 추가.
 - [ ] `app/graph/nodes.py` — 각 Agent를 LangGraph 노드로 래핑
 - [ ] `app/graph/edges.py` — Agent 실행 순서 및 조건 분기 정의
 - [ ] `app/graph/workflow.py` — 전체 그래프 조립 (Coordinator → Route Planner → Financial → Coordinator)
@@ -156,8 +175,10 @@
 
 ## Step 5. 동선 및 비용 계산 고도화
 
-- [ ] `app/utils/transport_rules.py` — 대중교통 휴리스틱 (시간 ×1.5~2.0, 거리 기반 요금)
-- [ ] `app/utils/cost_rules.py` — 식비·카페비·숙박비·입장료 추정 규칙
+- [x] `app/utils/transport_rules.py` — 대중교통 휴리스틱 (시간 ×1.7, 거리 기반 요금) +
+      자차/렌터카/택시 분기(`estimate_transport_cost`) — 팀원 PR로 구현돼 있었고 그대로 사용 중
+- [x] `app/utils/cost_rules.py` — 식비·카페비 추정 규칙(고정) + 입장료·숙박비는 실측 데이터
+      기반으로 확장 완료 (아래 Financial Agent 항목 참고)
 - [x] Route Planner — 카카오 API 기반 구간별 이동시간 계산 및 State 기록 (`_build_real_routes`,
       `route_summary`/`route_segments`에 기록됨 — 팀원 PR로 이미 구현돼 있었음)
 - [x] Route Planner — 하루 일정 과밀도 체크 (일정 강도·계절 반영) 완료.
@@ -166,9 +187,14 @@
       겨울이면 일조시간이 짧다고 보고 저녁 슬롯을 제외(예: 여유+1일 기준 여름 3슬롯 →
       겨울 2슬롯), 관련 경고 문구도 추가. 라이브 검증 완료(강릉 1박2일: 여름 5슬롯 vs
       겨울 4슬롯). 테스트 5건 추가.
-- [ ] Financial Agent — 이동수단별 비용 분기 (자차/렌터카/택시/대중교통)
-- [ ] Financial Agent — TourAPI usefee 비정형 텍스트 파싱 (Upstage 구조화 활용)
-- [ ] Financial Agent — State의 route_segments를 읽어 총 예상 비용 산정
+- [x] Financial Agent — 이동수단별 비용 분기 (자차/렌터카/택시/대중교통) — `transport_rules`
+      재사용, 하드코딩됐던 `travel_days=2`도 실제 daily_schedule 기준으로 수정
+- [x] Financial Agent — TourAPI usefee 비정형 텍스트 파싱 (Upstage 구조화 활용) 완료
+      (`parse_usefee_amount`, `FINANCIAL_USEFEE_PARSE_SYSTEM_PROMPT`). 숙박비도 `detailInfo2`
+      객실 요금으로 실측 반영(인원수/성수기 고려), 요금 "0" 데이터 오류 방어 처리 포함.
+- [x] Financial Agent — State의 route_segments를 읽어 총 예상 비용 산정 완료
+      (`build_financial_summary`가 route_plan의 route_summary/daily_schedule/selected_places/
+      lodging_place를 모두 읽어서 계산)
 
 ---
 
@@ -192,9 +218,10 @@
 
 ## Step 7. 테스트 및 시연 준비
 
-- [ ] `tests/test_route_planner.py` — 동선 설계 로직 테스트
-- [ ] `tests/test_financial.py` — 비용 계산 로직 테스트
-- [ ] `tests/test_rag.py` — RAG 검색 테스트
+- [x] `tests/test_route_planner.py` — 동선 설계 로직 테스트 (RAG/코스/거리/밀도/숙박 선택 등 다수)
+- [x] `tests/test_financial.py` — 비용 계산 로직 테스트 (usefee 파싱, 숙박 요금, 성수기 등)
+- [ ] `tests/test_rag.py` — RAG 검색 테스트 (파일만 있고 내용 비어있음 — retriever.py 직접
+      테스트하는 케이스는 아직 없음, route_planner 테스트가 간접적으로만 커버 중)
 - [ ] API 실패 시 `data/sample/` fallback 처리 검증
 - [ ] 시연용 대표 시나리오(예: 강릉 1박2일) end-to-end 동작 확인
 - [ ] `docs/` 문서 정리 (architecture, api_notes, state_design)
