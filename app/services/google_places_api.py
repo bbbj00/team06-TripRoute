@@ -1,3 +1,4 @@
+import time
 from typing import Any, Dict, Optional
 
 import requests
@@ -10,6 +11,9 @@ BASE_URL = "https://places.googleapis.com/v1/places:searchText"
 FIELD_MASK = "places.id,places.displayName,places.rating,places.userRatingCount,places.formattedAddress"
 
 DEFAULT_RADIUS_M = 500.0
+
+MAX_RETRIES = 3
+RETRY_BACKOFF_SECONDS = 2
 
 
 class GooglePlacesAPIError(Exception):
@@ -51,12 +55,24 @@ def find_place(
             }
         }
 
-    response = requests.post(BASE_URL, json=body, headers=headers, timeout=10)
-    if not response.ok:
-        raise GooglePlacesAPIError(f"searchText 실패: {response.status_code} {response.text}")
+    # 429(RESOURCE_EXHAUSTED, QPS 초과)는 backfill처럼 대량 호출 시 실제로 발생함.
+    # 다른 4xx/5xx는 재시도해도 소용없는 경우가 많아 바로 에러 처리하고, 429만 backoff 후 재시도한다.
+    last_error = None
+    for attempt in range(MAX_RETRIES):
+        response = requests.post(BASE_URL, json=body, headers=headers, timeout=10)
+        if response.status_code == 429:
+            last_error = f"429 Too Many Requests: {response.text}"
+            if attempt < MAX_RETRIES - 1:
+                time.sleep(RETRY_BACKOFF_SECONDS * (attempt + 1))
+                continue
+            raise GooglePlacesAPIError(last_error)
+        if not response.ok:
+            raise GooglePlacesAPIError(f"searchText 실패: {response.status_code} {response.text}")
 
-    places = response.json().get("places", [])
-    return places[0] if places else None
+        places = response.json().get("places", [])
+        return places[0] if places else None
+
+    raise GooglePlacesAPIError(last_error)
 
 
 def get_rating_and_review_count(

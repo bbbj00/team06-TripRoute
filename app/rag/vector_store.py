@@ -309,6 +309,7 @@ def backfill_ratings() -> Dict[str, int]:
         except GooglePlacesAPIError as e:
             print(f"  [경고] {content_id} Google Places 조회 실패: {e}")
             failed += 1
+            time.sleep(1)  # rate limit(429) 재시도 소진 후에도 실패하면 여기서도 쉬어감
             continue
 
         if rating_info["rating"] is None:
