@@ -138,6 +138,16 @@
 
 ---
 
+## Step 8. Docker 컨테이너화 및 CI/CD 기반 GCP 배포
+
+- [ ] 배포 대상 서비스 확정 (Cloud Run 유력 — FastAPI를 컨테이너로 띄우고 Gradio도 같은 서비스 또는 별도 서비스로 서빙)
+- [ ] `Dockerfile` 작성 및 로컬 컨테이너 실행 확인
+- [ ] `.env`의 API Key/Secret을 GCP Secret Manager(또는 Cloud Run 환경변수)로 이관
+- [ ] CI/CD 파이프라인 구성 (예: GitHub Actions → 컨테이너 이미지 빌드 → Artifact Registry push → Cloud Run 배포 자동화)
+- [ ] Cloud Run 배포 및 외부 접속 URL로 최종 시연 확인
+
+---
+
 ## 핵심 설계 원칙 (전 단계 공통 준수)
 
 - **State 중심 결합**: Agent 간 직접 호출 대신 `TripRouteState`를 매개로 데이터 공유
@@ -150,6 +160,6 @@
 
 ## MVP 범위 요약
 
-**포함**: 자연어 입력 · 이동수단 선택 · 인원수 · 관광지 후보 조회 · RAG 취향 매칭 · 카카오 기반 동선 · 대중교통 휴리스틱 · 일정표 · 예상 비용 · Gradio UI · FastAPI 엔드포인트
+**포함**: 자연어 입력 · 이동수단 선택 · 인원수 · 관광지 후보 조회 · RAG 취향 매칭 · 카카오 기반 동선 · 대중교통 휴리스틱 · 일정표 · 예상 비용 · Gradio UI · FastAPI 엔드포인트 · GCP 배포
 
 **제외**: 숙소/식당 예약 · 결제/예매 · 실시간 교통 · 실시간 대중교통 환승 · 지도 시각화 · 로그인 · 장기 개인화 · 모바일 앱
