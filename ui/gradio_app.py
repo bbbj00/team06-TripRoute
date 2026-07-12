@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any
 
 import gradio as gr
 
@@ -18,8 +17,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
-from app.agents.react_loop import run_triproute_react_loop
-from app.utils.formatter import format_trip_plan_markdown
+from app.agents.react_loop import run_triproute_react_loop  # noqa: E402
+from app.utils.formatter import format_trip_plan_markdown  # noqa: E402
 
 
 # ---------------------------------------------------------
