@@ -10,3 +10,5 @@ data/raw/
 
 .DS_Store
 .vscode/
+
+*.log
