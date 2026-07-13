@@ -1,23 +1,38 @@
-FROM python:3.14-slim-trixie
+# ==============================
+# 1단계: 의존성 빌드
+# ==============================
+FROM python:3.14-slim-trixie AS builder
 
-# uv 공식 이미지에서 실행 파일 복사
-COPY --from=ghcr.io/astral-sh/uv:0.11.28 /uv /uvx /bin/
+WORKDIR /app
+
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy
+
+RUN pip install --no-cache-dir uv
+
+COPY pyproject.toml uv.lock ./
+
+RUN uv sync \
+    --frozen \
+    --no-dev \
+    --no-install-project
+
+
+# ==============================
+# 2단계: 실제 실행 이미지
+# ==============================
+FROM python:3.14-slim-trixie AS runtime
 
 WORKDIR /app
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    UV_NO_DEV=1 \
-    UV_COMPILE_BYTECODE=1 \
-    UV_LINK_MODE=copy \
     PATH="/app/.venv/bin:$PATH"
 
-# 의존성 파일을 먼저 복사해 Docker 레이어 캐시 활용
-COPY pyproject.toml uv.lock ./
+# builder에서 설치한 Python 환경만 복사
+COPY --from=builder /app/.venv /app/.venv
 
-RUN uv sync --locked --no-dev --no-install-project
-
-# 프로젝트 파일 복사
+# 애플리케이션 소스 복사
 COPY . .
 
 EXPOSE 8000
