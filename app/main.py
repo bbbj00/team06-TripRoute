@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from app.agents.react_loop import run_triproute_react_loop
 from app.schemas.request import TripPlanRequest
 from app.schemas.response import TripPlanResponse
-from ui.gradio_app import demo
+from ui.gradio_app import CUSTOM_CSS, HEAD_HTML, demo
 
 
 app = FastAPI(
@@ -42,7 +42,11 @@ def create_trip_plan(request: TripPlanRequest) -> TripPlanResponse:
 
 # Gradio UI를 FastAPI의 /ui 경로에 연결
 app = gr.mount_gradio_app(
-    app=app,
-    blocks=demo,
+    app,
+    demo,
     path="/ui",
+    theme=gr.themes.Default(),
+    css=CUSTOM_CSS,
+    head=HEAD_HTML,
+    show_error=True,
 )
