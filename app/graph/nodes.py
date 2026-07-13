@@ -21,7 +21,10 @@ def _trace_entry(step: int, action: str, description: str, **extra: Any) -> Dict
 
 def parse_node(state: TripRouteState) -> Dict[str, Any]:
     """1단계: Solar API(또는 Mock parser)로 사용자 입력을 여행 조건으로 구조화한다."""
-    parsed, parse_warnings = parse_trip_request(state["user_input"])
+    parsed, parse_warnings = parse_trip_request(
+        state["user_input"],
+        state.get("previous_condition_summary"),
+    )
     parser = parsed.get("_parser", "unknown")
 
     return {

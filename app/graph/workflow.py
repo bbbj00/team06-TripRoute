@@ -49,15 +49,20 @@ def run_trip_route_workflow(
     user_input: str,
     transport_mode: str = "대중교통",
     people_count: int = 2,
+    previous_condition_summary: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """
     컴파일된 TripRoute 그래프를 실행하고 최종 응답 dict를 반환한다.
+
+    previous_condition_summary(직전 턴의 condition_summary)를 넘기면 후속 대화
+    맥락을 이어받아 파싱한다(parse_node -> parse_trip_request로 전달됨).
     """
     final_state = _TRIP_ROUTE_GRAPH.invoke(
         {
             "user_input": user_input,
             "transport_mode": transport_mode,
             "people_count": people_count,
+            "previous_condition_summary": previous_condition_summary,
             "warnings": [],
             "react_trace": [],
         }

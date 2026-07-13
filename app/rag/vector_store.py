@@ -7,9 +7,11 @@ from app.services.supabase_client import (
     get_existing_content_ids,
     get_festivals_missing_event_dates,
     get_places_missing_category,
+    get_places_missing_coordinates,
     get_places_missing_rating,
     insert_place,
     update_place_category,
+    update_place_coordinates,
     update_place_event_dates,
     update_place_rating,
 )
@@ -215,6 +217,10 @@ def ingest_city(
                 event_end_date=event_end_date,
                 rating=rating,
                 review_count=review_count,
+                # Google Places 평점 조회에 쓰려고 이미 받아온 좌표를 그대로 저장한다
+                # (추가 API 호출 없음) — Route Planner가 나중에 TourAPI로 다시 조회할 필요가 없어짐.
+                latitude=_to_float(detail.get("mapy")),
+                longitude=_to_float(detail.get("mapx")),
             )
             saved.append({"title": detail.get("title"), "content_id": detail["contentid"]})
 
@@ -338,6 +344,44 @@ def backfill_ratings() -> Dict[str, int]:
             print(f"  진행: {i + 1}/{len(targets)}")
 
         update_place_rating(content_id, rating_info["rating"], rating_info["review_count"])
+        updated += 1
+
+    print(f"백필 완료: {updated}건 갱신, {failed}건 실패")
+    return {"updated": updated, "failed": failed}
+
+
+def backfill_coordinates() -> Dict[str, int]:
+    """
+    latitude/longitude가 비어있는 기존 places 행들에 대해 TourAPI를 다시 조회해서 좌표를 채워넣습니다.
+    """
+
+    targets = get_places_missing_coordinates(limit=5000)
+    print(f"좌표 백필 대상: {len(targets)}건")
+
+    updated = 0
+    failed = 0
+    for i, row in enumerate(targets):
+        content_id = row["content_id"]
+        try:
+            detail = get_detail_common(content_id)
+        except TourAPIError as e:
+            print(f"  [경고] {content_id} 상세조회 실패: {e}")
+            failed += 1
+            time.sleep(1)  # rate limit(429) 대비, 실패 시 조금 더 쉬어감
+            continue
+
+        latitude = _to_float(detail.get("mapy"))
+        longitude = _to_float(detail.get("mapx"))
+
+        if latitude is None or longitude is None:
+            failed += 1
+            continue
+
+        time.sleep(0.2)  # TourAPI rate limit 방지용 호출 간 딜레이
+        if (i + 1) % 100 == 0:
+            print(f"  진행: {i + 1}/{len(targets)}")
+
+        update_place_coordinates(content_id, latitude, longitude)
         updated += 1
 
     print(f"백필 완료: {updated}건 갱신, {failed}건 실패")

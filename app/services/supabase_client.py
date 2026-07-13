@@ -20,12 +20,17 @@ def insert_place(
     event_end_date: Optional[str] = None,
     rating: Optional[float] = None,
     review_count: Optional[int] = None,
+    latitude: Optional[float] = None,
+    longitude: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     관광지 정보와 임베딩을 places 테이블에 저장합니다.
     content_id가 이미 있으면 덮어씁니다(upsert).
     event_start_date/event_end_date는 축제(축제공연행사) 개최기간용이며, 해당 없는 장소는 None으로 저장됩니다.
     rating/review_count는 Google Places 매칭 결과이며, 매칭 실패 시 None으로 저장됩니다.
+    latitude/longitude는 TourAPI detailCommon2(mapy/mapx) 결과로, 수집 시점에 이미 조회한
+    값을 그대로 저장한다 — 이걸 저장해두면 나중에 Route Planner가 같은 장소의 좌표를
+    다시 TourAPI로 조회할 필요가 없어진다(match_places 검색 결과에 바로 포함됨).
     """
 
     row = {
@@ -39,6 +44,8 @@ def insert_place(
         "event_end_date": event_end_date,
         "rating": rating,
         "review_count": review_count,
+        "latitude": latitude,
+        "longitude": longitude,
     }
 
     response = get_client().table("places").upsert(row, on_conflict="content_id").execute()
@@ -102,6 +109,37 @@ def update_place_rating(content_id: str, rating: Optional[float], review_count: 
         get_client()
         .table("places")
         .update({"rating": rating, "review_count": review_count})
+        .eq("content_id", content_id)
+        .execute()
+    )
+    return response.data
+
+
+def get_places_missing_coordinates(limit: int = 1000) -> List[Dict[str, Any]]:
+    """
+    latitude가 비어있는 관광지 행을 가져옵니다 (좌표 백필 대상 조회용).
+    """
+
+    response = (
+        get_client()
+        .table("places")
+        .select("content_id")
+        .is_("latitude", "null")
+        .limit(limit)
+        .execute()
+    )
+    return response.data
+
+
+def update_place_coordinates(content_id: str, latitude: Optional[float], longitude: Optional[float]) -> Dict[str, Any]:
+    """
+    특정 content_id 행의 latitude/longitude만 갱신합니다.
+    """
+
+    response = (
+        get_client()
+        .table("places")
+        .update({"latitude": latitude, "longitude": longitude})
         .eq("content_id", content_id)
         .execute()
     )

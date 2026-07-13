@@ -16,6 +16,9 @@ class TripRouteState(TypedDict, total=False):
     transport_mode: str
     people_count: int
 
+    # 직전 턴의 condition_summary (후속 대화 맥락 이어가기용, 없으면 None)
+    previous_condition_summary: Optional[Dict[str, Any]]
+
     # Solar 파싱 결과 (parse_trip_request)
     city: str
     season: str

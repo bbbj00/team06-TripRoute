@@ -59,24 +59,47 @@ def format_condition_summary(plan: Dict[str, Any]) -> str:
 
 
 def format_daily_schedule(plan: Dict[str, Any]) -> str:
+    """
+    일정을 Day별로 묶어서 "### Day N" 소제목 + 표를 반복 출력한다.
+    (Day 컬럼을 표에서 빼고 소제목으로 대체 — 표마다 같은 값이 반복되던 문제 해결)
+    """
     schedule = plan.get("daily_schedule", [])
 
-    rows = []
-    for item in schedule:
-        rows.append(
-            [
-                item.get("day"),
-                item.get("time_slot"),
-                item.get("place_name") or item.get("place"),
-                item.get("reason"),
-                item.get("route_memo"),
-            ]
+    if not schedule:
+        return "## 시간대별 일정표\n\n" + _markdown_table(
+            ["시간대", "장소", "추천 이유", "동선 메모"], []
         )
 
-    return "## 시간대별 일정표\n\n" + _markdown_table(
-        ["Day", "시간대", "장소", "추천 이유", "동선 메모"],
-        rows,
-    )
+    days: Dict[Any, List[Dict[str, Any]]] = {}
+    order: List[Any] = []
+    for item in schedule:
+        day = item.get("day")
+        if day not in days:
+            days[day] = []
+            order.append(day)
+        days[day].append(item)
+
+    sections = ["## 시간대별 일정표"]
+
+    for day in order:
+        rows = []
+        for item in days[day]:
+            rows.append(
+                [
+                    item.get("time_slot"),
+                    item.get("place_name") or item.get("place"),
+                    item.get("reason"),
+                    item.get("route_memo"),
+                ]
+            )
+
+        day_label = f"Day {day}" if day is not None else "Day -"
+        sections.append(f"### {day_label}")
+        sections.append(
+            _markdown_table(["시간대", "장소", "추천 이유", "동선 메모"], rows)
+        )
+
+    return "\n\n".join(sections)
 
 
 def format_route_summary(plan: Dict[str, Any]) -> str:

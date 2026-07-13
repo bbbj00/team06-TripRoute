@@ -1,3 +1,5 @@
+from typing import Any, Optional
+
 from pydantic import BaseModel, Field
 
 
@@ -23,4 +25,12 @@ class TripPlanRequest(BaseModel):
         default=1,
         ge=1,
         description="여행 인원수",
+    )
+
+    previous_condition_summary: Optional[dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "직전 턴의 condition_summary. 넘기면 후속 요청("
+            "예: '카페 말고 맛집 위주로 바꿔줘')이 이전 조건을 이어받아 처리된다."
+        ),
     )

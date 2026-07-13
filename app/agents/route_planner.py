@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import re
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Tuple
 
 from app.rag.retriever import retrieve_places_by_taste
@@ -266,8 +267,8 @@ def _normalize_rag_place(item: Dict[str, Any], travel_style: List[str]) -> Place
         "title": title,
         "content_id": item.get("content_id"),
         "address": item.get("address") or "",
-        "longitude": None,
-        "latitude": None,
+        "longitude": _to_float(item.get("longitude")),
+        "latitude": _to_float(item.get("latitude")),
         "area_code": None,
         "signgu_code": None,
         "image_url": "",
@@ -298,6 +299,26 @@ def _sort_by_prefer_local(places: List[Place], prefer_local: bool) -> List[Place
     return sorted(places, key=sort_key)
 
 
+# 좌표/카테고리는 한 번 조회하면 거의 안 바뀌는 데이터라 길게(7일) 캐싱한다 —
+# 코스 캐시(course_detail_info)와 동일한 TTL을 씀.
+DETAIL_COMMON_CACHE_TTL_SECONDS = 60 * 60 * 24 * 7
+
+# get_detail_common 동시 호출 상한. TourAPI는 대량 동시 호출 시 429가 실제로 발생한
+# 이력이 있어(docs/api_notes.md 참고) 무제한 병렬은 위험하고, 적당히 제한된 스레드풀로만
+# 병렬화한다(순차 호출은 후보가 많으면 개당 ~2초씩 누적돼 한 번의 계획 생성에 1분 이상
+# 걸리는 원인이었음 — 네트워크 대기가 대부분이라 병렬화 효과가 큼).
+MAX_CONCURRENT_DETAIL_LOOKUPS = 6
+
+
+def _fetch_detail_common_cached(content_id: str) -> Dict[str, Any]:
+    return cached_call(
+        namespace="detail_common",
+        params={"content_id": content_id},
+        fetch_fn=lambda: get_detail_common(content_id),
+        ttl_seconds=DETAIL_COMMON_CACHE_TTL_SECONDS,
+    )
+
+
 def _fill_missing_place_details(places: List[Place]) -> List[Place]:
     """
     RAG 결과는 좌표/지역코드가 없으므로, 동선 계산과 연관 관광지 조회에 필요한
@@ -306,18 +327,21 @@ def _fill_missing_place_details(places: List[Place]) -> List[Place]:
     (Financial Agent가 카테고리로 usefee/숙박 요금 조회 대상을 판단하는 데 필요).
     """
 
-    for place in places:
-        if place.get("latitude") is not None and place.get("longitude") is not None:
-            continue
+    targets = [
+        place
+        for place in places
+        if place.get("content_id")
+        and (place.get("latitude") is None or place.get("longitude") is None)
+    ]
 
-        content_id = place.get("content_id")
-        if not content_id:
-            continue
+    if not targets:
+        return places
 
+    def _apply(place: Place) -> None:
         try:
-            detail = get_detail_common(content_id)
+            detail = _fetch_detail_common_cached(place["content_id"])
         except TourAPIError:
-            continue
+            return
 
         place["latitude"] = _to_float(detail.get("mapy"))
         place["longitude"] = _to_float(detail.get("mapx"))
@@ -331,6 +355,9 @@ def _fill_missing_place_details(places: List[Place]) -> List[Place]:
             place["image_url"] = detail.get("firstimage") or ""
         if not place.get("category"):
             place["category"] = content_type_id_to_category(detail.get("contenttypeid"))
+
+    with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_DETAIL_LOOKUPS) as executor:
+        list(executor.map(_apply, targets))
 
     return places
 
