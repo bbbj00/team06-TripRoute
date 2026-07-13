@@ -239,27 +239,72 @@ def _normalize_parse_result(
     }
 
 
+# parse 결과 JSON 스키마에 실제로 속하는 필드만. condition_summary(coordinator.py의
+# finalize_node 출력)에는 transport_mode/people_count/parser/data_source 같은
+# 스키마 외 필드도 섞여 있어서, 이전 대화를 합성 assistant 메시지로 되돌려줄 때
+# 이 필드들만 걸러내야 모델이 스키마 밖 키를 그대로 따라 하지 않는다.
+_PARSE_SCHEMA_FIELDS = (
+    "city",
+    "season",
+    "duration",
+    "travel_style",
+    "schedule_intensity",
+    "prefer_local",
+    "prefer_budget",
+    "is_peak_season",
+)
+
+
+def _build_solar_messages(
+    user_input: str,
+    previous_condition_summary: dict[str, Any] | None,
+) -> list[dict[str, str]]:
+    messages = [
+        {
+            "role": "system",
+            "content": COORDINATOR_PARSE_SYSTEM_PROMPT,
+        },
+    ]
+
+    if previous_condition_summary:
+        previous_user_input = previous_condition_summary.get("user_input")
+        previous_parsed = {
+            field: previous_condition_summary.get(field)
+            for field in _PARSE_SCHEMA_FIELDS
+            if field in previous_condition_summary
+        }
+
+        if previous_user_input and previous_parsed:
+            messages.append({"role": "user", "content": previous_user_input})
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": json.dumps(previous_parsed, ensure_ascii=False),
+                }
+            )
+
+    messages.append({"role": "user", "content": user_input})
+
+    return messages
+
+
 def parse_user_input_with_solar(
     user_input: str,
+    previous_condition_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     사용자 자연어 요청을 Solar API로 여행 조건 JSON으로 변환합니다.
+
+    previous_condition_summary(직전 턴의 condition_summary)가 주어지면, 이전
+    사용자 메시지/파싱 결과를 대화 맥락으로 같이 보내 후속 요청("카페 말고
+    맛집 위주로 바꿔줘" 등)이 이전 조건을 이어받아 갱신되도록 한다.
     """
 
     model = os.getenv("UPSTAGE_MODEL", CHAT_MODEL)
 
     response = _client().chat.completions.create(
         model=model,
-        messages=[
-            {
-                "role": "system",
-                "content": COORDINATOR_PARSE_SYSTEM_PROMPT,
-            },
-            {
-                "role": "user",
-                "content": user_input,
-            },
-        ],
+        messages=_build_solar_messages(user_input, previous_condition_summary),
         temperature=0,
     )
 
@@ -271,13 +316,14 @@ def parse_user_input_with_solar(
 
 def parse_trip_request(
     user_input: str,
+    previous_condition_summary: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     """
     Solar 입력 파싱을 시도하고 실패하면 Mock parser를 사용합니다.
     """
 
     try:
-        parsed = parse_user_input_with_solar(user_input)
+        parsed = parse_user_input_with_solar(user_input, previous_condition_summary)
         return parsed, []
 
     except Exception as error:
@@ -289,6 +335,14 @@ def parse_trip_request(
                 f"원인: {error}"
             )
         ]
+
+        if previous_condition_summary:
+            # Mock parser는 키워드 매칭만 하고 대화 맥락을 전혀 안 보므로, 후속 턴에서
+            # mock으로 떨어지면 이전 조건이 그대로 유실된다 — 조용히 품질이 떨어지는
+            # 대신 사용자가 알아챌 수 있게 경고를 남긴다.
+            warnings.append(
+                "이전 대화 맥락을 반영하지 못했습니다 (Mock fallback)."
+            )
 
         return fallback, warnings
 
