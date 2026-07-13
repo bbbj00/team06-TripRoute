@@ -24,14 +24,17 @@ env:
   DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
 
 jobs:
-  build-and-deploy:
-    name: Build and Deploy
+  # ==================================================
+  # 1. Docker 이미지 빌드
+  # ==================================================
+  build:
+    name: Build
     if: >
       github.event_name == 'workflow_dispatch' ||
       github.event.workflow_run.conclusion == 'success'
 
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
 
     steps:
       - name: Checkout deployment commit
@@ -40,29 +43,82 @@ jobs:
           ref: ${{ env.DEPLOY_SHA }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@v4.2.0
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v7.3.0
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          tags: ${{ env.IMAGE_NAME }}:${{ env.DEPLOY_SHA }}
+          outputs: type=docker,dest=/tmp/triproute-image.tar
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Upload Docker image artifact
+        uses: actions/upload-artifact@v7
+        with:
+          path: /tmp/triproute-image.tar
+          archive: false
+          retention-days: 1
+
+  # ==================================================
+  # 2. GHCR에 Docker 이미지 Push
+  # ==================================================
+  push:
+    name: Push
+    needs: build
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Download Docker image artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: triproute-image.tar
+          path: /tmp
+
+      - name: Load Docker image
+        run: |
+          docker load --input /tmp/triproute-image.tar
+          docker image inspect "${IMAGE_NAME}:${DEPLOY_SHA}"
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
+        uses: docker/login-action@v4.4.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v7
+      - name: Push commit image
+        run: |
+          docker push "${IMAGE_NAME}:${DEPLOY_SHA}"
+
+      - name: Push latest image
+        run: |
+          docker tag \
+            "${IMAGE_NAME}:${DEPLOY_SHA}" \
+            "${IMAGE_NAME}:latest"
+
+          docker push "${IMAGE_NAME}:latest"
+
+  # ==================================================
+  # 3. GCE VM에 배포
+  # ==================================================
+  deploy:
+    name: Deploy
+    needs: push
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout deployment commit
+        uses: actions/checkout@v7
         with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          tags: |
-            ${{ env.IMAGE_NAME }}:latest
-            ${{ env.IMAGE_NAME }}:${{ env.DEPLOY_SHA }}
-          labels: |
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ env.DEPLOY_SHA }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          ref: ${{ env.DEPLOY_SHA }}
 
       - name: Copy production Compose file to GCE
         uses: appleboy/scp-action@v1.0.0
@@ -111,6 +167,7 @@ jobs:
               --remove-orphans
 
             attempt=1
+
             while [ "$attempt" -le 30 ]; do
               if curl -fsS http://localhost:8000/ > /dev/null; then
                 echo "TripRoute deployment health check passed."
