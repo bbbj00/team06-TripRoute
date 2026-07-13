@@ -8,7 +8,7 @@ from app.core.config import settings
 # Places API (Legacy)는 2025년 3월부로 동결되어 신규 프로젝트에서 활성화 자체가 안 되므로
 # Places API (New)를 사용한다.
 BASE_URL = "https://places.googleapis.com/v1/places:searchText"
-FIELD_MASK = "places.id,places.displayName,places.rating,places.userRatingCount,places.formattedAddress"
+FIELD_MASK = "places.id,places.displayName,places.rating,places.userRatingCount,places.formattedAddress,places.location,places.priceLevel"
 
 DEFAULT_RADIUS_M = 500.0
 
@@ -93,4 +93,44 @@ def get_rating_and_review_count(
     return {
         "rating": place.get("rating"),
         "review_count": place.get("userRatingCount"),
+    }
+
+
+def get_price_level(
+    name: str,
+    address: Optional[str] = None,
+    lat: Optional[float] = None,
+    lng: Optional[float] = None,
+) -> Optional[str]:
+    """
+    장소의 가격대(priceLevel)를 가져옵니다. 매칭 실패거나 해당 장소에 가격대 정보가
+    없으면(예: 데이터 미등록) None을 반환합니다.
+
+    반환값은 Google Places(New)의 priceLevel enum 문자열 그대로입니다
+    (PRICE_LEVEL_FREE / INEXPENSIVE / MODERATE / EXPENSIVE / VERY_EXPENSIVE).
+    """
+
+    place = find_place(name, address, lat=lat, lng=lng)
+    if not place:
+        return None
+
+    return place.get("priceLevel")
+
+
+def get_coordinates(
+    name: str,
+    address: Optional[str] = None,
+) -> Dict[str, Optional[float]]:
+    """
+    장소 이름과 주소로 평점/리뷰 대신 위도, 경도를 뽑아서 반환합니다.
+    매칭 실패 시 둘 다 None입니다.
+    """
+    place = find_place(name, address=address)
+    if not place or "location" not in place:
+        return {"latitude": None, "longitude": None}
+
+    location = place["location"]
+    return {
+        "latitude": location.get("latitude"),
+        "longitude": location.get("longitude"),
     }

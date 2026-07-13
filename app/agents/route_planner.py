@@ -356,6 +356,19 @@ def _fill_missing_place_details(places: List[Place]) -> List[Place]:
         if not place.get("category"):
             place["category"] = content_type_id_to_category(detail.get("contenttypeid"))
 
+        # TourAPI에서 좌표를 받지 못한 경우 Google Places API로 Fallback
+        if place.get("latitude") is None or place.get("longitude") is None:
+            try:
+                from app.services.google_places_api import get_coordinates
+                search_name = place.get("name") or ""
+                search_addr = place.get("address") or detail.get("addr1") or ""
+                coords = get_coordinates(search_name, address=search_addr)
+                if coords["latitude"] is not None and coords["longitude"] is not None:
+                    place["latitude"] = coords["latitude"]
+                    place["longitude"] = coords["longitude"]
+            except Exception as e:
+                print(f"[경고] Google Places 좌표 보완 실패 ({place.get('name')}): {e}")
+
     with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_DETAIL_LOOKUPS) as executor:
         list(executor.map(_apply, targets))
 
@@ -1184,6 +1197,25 @@ def build_route_plan(
     )
     max_places = len(time_slots)
 
+    must_include_names = list(parsed.get("must_include_places") or [])
+    must_include_places_list = []
+    
+    if must_include_names:
+        for p_name in must_include_names:
+            try:
+                from app.services.tour_api import search_keyword
+                # TourAPI로 이름 검색 (도시명 + 장소명 조합으로 검색 정확도 높이기)
+                search_res = search_keyword(f"{city} {p_name}", num_of_rows=3, page_no=1)
+                if not search_res:
+                    search_res = search_keyword(p_name, num_of_rows=3, page_no=1)
+                
+                if search_res:
+                    # 첫 번째 결과를 가져옴
+                    place = _normalize_tour_place(search_res[0], "tour_api", travel_style)
+                    must_include_places_list.append(place)
+            except Exception:
+                pass
+
     rag_places = _search_rag_places(
         city=city,
         travel_style=travel_style,
@@ -1208,9 +1240,31 @@ def build_route_plan(
                 transport_mode=transport_mode,
             )
 
+    # must_include 장소들을 최우선순위(맨 앞)에 추가
+    if must_include_places_list:
+        # 중복 방지 (이름 또는 content_id 기준)
+        existing_names = {p["name"] for p in candidate_places}
+        for mp in reversed(must_include_places_list):
+            if mp["name"] not in existing_names:
+                candidate_places.insert(0, mp)
+
     # 취향 순위만으로 뽑으면 서로 멀리 떨어진 장소가 섞여 동선이 비효율적일 수 있어서,
     # 취향 1등 기준으로 지리적으로 뭉친 후보만 남긴다 (순위는 그대로 유지됨)
-    candidate_places = _filter_places_within_radius(candidate_places)
+    # 단, must_include 장소는 무조건 유지하도록 처리
+    
+    def _filter_with_must_include(candidates: List[Place], must_includes: List[Place]) -> List[Place]:
+        filtered = _filter_places_within_radius(candidates)
+        # filtered에 필수 장소가 빠졌다면 다시 강제 추가
+        must_names = {m["name"] for m in must_includes}
+        filtered_names = {f["name"] for f in filtered}
+        
+        for m in must_includes:
+            if m["name"] not in filtered_names:
+                filtered.insert(0, m)
+                filtered_names.add(m["name"])
+        return filtered
+
+    candidate_places = _filter_with_must_include(candidate_places, must_include_places_list)
 
     if not candidate_places:
         return _build_mock_fallback(

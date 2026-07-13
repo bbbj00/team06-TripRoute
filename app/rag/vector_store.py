@@ -374,6 +374,19 @@ def backfill_coordinates() -> Dict[str, int]:
         longitude = _to_float(detail.get("mapx"))
 
         if latitude is None or longitude is None:
+            # Fallback to Google Places API
+            try:
+                from app.services.google_places_api import get_coordinates
+                search_name = detail.get("title", row.get("title", ""))
+                search_addr = detail.get("addr1", "")
+                coords = get_coordinates(search_name, address=search_addr)
+                if coords["latitude"] is not None and coords["longitude"] is not None:
+                    latitude = coords["latitude"]
+                    longitude = coords["longitude"]
+            except Exception as e:
+                pass
+
+        if latitude is None or longitude is None:
             failed += 1
             continue
 

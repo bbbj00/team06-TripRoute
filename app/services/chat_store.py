@@ -10,7 +10,7 @@
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from app.services.supabase_client import get_client
+from app.services.supabase_client import get_service_client as get_client
 
 
 def _now_iso() -> str:
