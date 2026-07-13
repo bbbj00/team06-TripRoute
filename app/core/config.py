@@ -15,6 +15,10 @@ class Settings:
 
     SUPABASE_URL: str | None = os.getenv("SUPABASE_URL")
     SUPABASE_KEY: str | None = os.getenv("SUPABASE_KEY")
+    # 대화 기록(chat_sessions/chat_messages)은 RLS가 걸려 있어 anon 키로는 접근이
+    # 막힌다. 백엔드가 소유권을 직접 검증하므로(chat_store._session_belongs_to_user)
+    # 이 클라이언트만 service_role 키로 RLS를 우회한다 — 절대 브라우저로 노출하지 말 것.
+    SUPABASE_SERVICE_KEY: str | None = os.getenv("SUPABASE_SERVICE_KEY")
 
     LANGFUSE_PUBLIC_KEY: str | None = os.getenv("LANGFUSE_PUBLIC_KEY")
     LANGFUSE_SECRET_KEY: str | None = os.getenv("LANGFUSE_SECRET_KEY")

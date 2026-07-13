@@ -93,7 +93,11 @@ def format_daily_schedule(plan: Dict[str, Any]) -> str:
                 ]
             )
 
-        day_label = f"Day {day}" if day is not None else "Day -"
+        if day is None:
+            day_label = "Day -"
+        else:
+            day_str = str(day).strip()
+            day_label = day_str if day_str.lower().startswith("day") else f"Day {day_str}"
         sections.append(f"### {day_label}")
         sections.append(
             _markdown_table(["시간대", "장소", "추천 이유", "동선 메모"], rows)
@@ -104,25 +108,69 @@ def format_daily_schedule(plan: Dict[str, Any]) -> str:
 
 def format_route_summary(plan: Dict[str, Any]) -> str:
     routes = plan.get("route_summary", [])
+    schedule = plan.get("daily_schedule", [])
 
-    rows = []
-    for route in routes:
-        rows.append(
-            [
-                route.get("from"),
-                route.get("to"),
-                route.get("distance_km"),
-                route.get("estimated_time")
-                or route.get("estimated_time_minutes"),
-                route.get("transport_mode"),
-                route.get("memo"),
-            ]
+    if not schedule or not routes:
+        return "## 이동 동선 요약\n\n동선 정보가 없습니다."
+
+    # schedule_place_day_map: 장소 이름으로 Day를 찾기
+    # 동일한 이름이 여러 번 나올 수 있으므로, 인덱스로 매핑
+    day_for_index = [s.get("day", "") for s in schedule]
+
+    day_routes: Dict[str, List[List[Any]]] = {}
+    
+    for i, route in enumerate(routes):
+        if i + 1 < len(day_for_index):
+            origin_day = day_for_index[i]
+            dest_day = day_for_index[i + 1]
+            
+            # Cross-day 이동은 생략
+            if origin_day != dest_day:
+                continue
+            
+            if origin_day not in day_routes:
+                day_routes[origin_day] = []
+                
+            day_routes[origin_day].append(
+                [
+                    route.get("from"),
+                    route.get("to"),
+                    route.get("distance_km"),
+                    route.get("estimated_time") or route.get("estimated_time_minutes"),
+                    route.get("transport_mode"),
+                    route.get("memo"),
+                ]
+            )
+
+    if not day_routes:
+        # Fallback if mapping fails
+        rows = []
+        for route in routes:
+            rows.append(
+                [
+                    route.get("from"),
+                    route.get("to"),
+                    route.get("distance_km"),
+                    route.get("estimated_time") or route.get("estimated_time_minutes"),
+                    route.get("transport_mode"),
+                    route.get("memo"),
+                ]
+            )
+        return "## 이동 동선 요약\n\n" + _markdown_table(
+            ["출발", "도착", "거리(km)", "예상 시간", "이동수단", "메모"], rows
         )
 
-    return "## 이동 동선 요약\n\n" + _markdown_table(
-        ["출발", "도착", "거리(km)", "예상 시간", "이동수단", "메모"],
-        rows,
-    )
+    sections = ["## 이동 동선 요약"]
+    for day_str, rows in day_routes.items():
+        day_label = day_str if day_str.lower().startswith("day") else f"Day {day_str}"
+        sections.append(f"### {day_label}")
+        sections.append(
+            _markdown_table(
+                ["출발", "도착", "거리(km)", "예상 시간", "이동수단", "메모"], rows
+            )
+        )
+
+    return "\n\n".join(sections)
 
 
 def format_cost_summary(plan: Dict[str, Any]) -> str:

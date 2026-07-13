@@ -26,6 +26,7 @@ DEFAULT_PARSE_RESULT = {
     "season": "여름",
     "duration": "1박 2일",
     "travel_style": ["바다", "감성 카페", "먹거리"],
+    "must_include_places": [],
     "schedule_intensity": "여유로운 일정",
     "prefer_local": False,
     "prefer_budget": False,
@@ -214,6 +215,10 @@ def _normalize_parse_result(
     if isinstance(travel_style, str):
         travel_style = [travel_style]
 
+    must_include_places = data.get("must_include_places", [])
+    if isinstance(must_include_places, str):
+        must_include_places = [must_include_places]
+
     return {
         "city": (
             data.get("city")
@@ -228,6 +233,7 @@ def _normalize_parse_result(
             or DEFAULT_PARSE_RESULT["duration"]
         ),
         "travel_style": travel_style,
+        "must_include_places": must_include_places,
         "schedule_intensity": (
             data.get("schedule_intensity")
             or DEFAULT_PARSE_RESULT["schedule_intensity"]
@@ -248,6 +254,7 @@ _PARSE_SCHEMA_FIELDS = (
     "season",
     "duration",
     "travel_style",
+    "must_include_places",
     "schedule_intensity",
     "prefer_local",
     "prefer_budget",

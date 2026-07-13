@@ -32,6 +32,25 @@ def _session_to_dict(response: Any) -> Dict[str, Any]:
     }
 
 
+def _translate_auth_error(error_msg: str) -> str:
+    msg = error_msg.lower()
+    if "invalid format" in msg and "email" in msg:
+        return "이메일 형식이 올바르지 않습니다."
+    if "user already registered" in msg:
+        return "이미 가입된 이메일입니다."
+    if "invalid login credentials" in msg:
+        return "이메일 또는 비밀번호가 일치하지 않습니다."
+    if "password should be at least" in msg:
+        return "비밀번호는 최소 6자 이상이어야 합니다."
+    if "signup requires a valid password" in msg:
+        return "비밀번호를 입력해주세요."
+    if "rate limit" in msg:
+        return "요청이 너무 많습니다. 잠시 후 다시 시도해주세요."
+    if "missing email" in msg:
+        return "이메일을 입력해주세요."
+    return "인증 오류가 발생했습니다 (" + error_msg + ")"
+
+
 def sign_up(email: str, password: str) -> Dict[str, Any]:
     """
     이메일/비밀번호로 회원가입한다.
@@ -41,7 +60,9 @@ def sign_up(email: str, password: str) -> Dict[str, Any]:
             {"email": email, "password": password}
         )
     except AuthApiError as error:
-        raise AuthError(str(error)) from error
+        raise AuthError(_translate_auth_error(str(error))) from error
+    except Exception as error:
+        raise AuthError(_translate_auth_error(str(error))) from error
 
     return _session_to_dict(response)
 
@@ -55,7 +76,9 @@ def sign_in(email: str, password: str) -> Dict[str, Any]:
             {"email": email, "password": password}
         )
     except AuthApiError as error:
-        raise AuthError(str(error)) from error
+        raise AuthError(_translate_auth_error(str(error))) from error
+    except Exception as error:
+        raise AuthError(_translate_auth_error(str(error))) from error
 
     return _session_to_dict(response)
 

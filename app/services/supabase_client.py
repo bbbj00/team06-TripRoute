@@ -9,6 +9,20 @@ def get_client() -> Client:
     return create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
 
 
+def get_service_client() -> Client:
+    """
+    RLS를 우회하는 service_role 클라이언트. chat_store처럼 백엔드가 소유권을
+    직접 검증하는 테이블 전용 — SUPABASE_SERVICE_KEY가 없으면 즉시 실패한다
+    (anon 키로 조용히 폴백하면 RLS에 막혀 매번 실패하는 걸 다시 놓치게 된다).
+    """
+    if not settings.SUPABASE_SERVICE_KEY:
+        raise RuntimeError(
+            "SUPABASE_SERVICE_KEY가 설정되지 않았습니다. "
+            "Supabase 프로젝트 설정 > API에서 service_role 키를 .env에 추가하세요."
+        )
+    return create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_KEY)
+
+
 def insert_place(
     content_id: str,
     title: str,

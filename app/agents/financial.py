@@ -3,6 +3,7 @@
 from typing import Any, Dict, List, Optional
 
 from app.rag.vector_store import CONTENT_TYPE_ID_TO_CATEGORY
+from app.services.google_places_api import GooglePlacesAPIError, get_price_level
 from app.services.tour_api import TourAPIError, get_detail_info, get_detail_intro
 from app.services.upstage_client import parse_usefee_amount
 from app.utils.cache import cached_call
@@ -15,6 +16,12 @@ CATEGORY_TO_CONTENT_TYPE_ID = {
 }
 
 LODGING_CONTENT_TYPE_ID = "32"
+RESTAURANT_CONTENT_TYPE_ID = "39"
+
+# TourAPI는 카페를 "음식점"(39)과 같은 content_type_id로 묶어서 내려주기 때문에
+# 카페/음식점을 나눌 구조화된 필드가 없다. 이름에 카페 관련 키워드가 있으면 카페로
+# 간주하는 휴리스틱으로 대체한다(예산 감지에 쓰는 upstage_client의 키워드 매칭과 같은 방식).
+CAFE_KEYWORDS = ("카페", "커피", "cafe", "coffee")
 
 
 def _resolve_content_type_id(place: Dict[str, Any]) -> Optional[str]:
@@ -29,6 +36,11 @@ def _resolve_content_type_id(place: Dict[str, Any]) -> Optional[str]:
         return CATEGORY_TO_CONTENT_TYPE_ID.get(category)
 
     return None
+
+
+def _is_cafe_place(place: Dict[str, Any]) -> bool:
+    title = (place.get("title") or "").lower()
+    return any(keyword in title for keyword in CAFE_KEYWORDS)
 
 
 def _fetch_admission_fee(place: Dict[str, Any]) -> Optional[int]:
@@ -60,6 +72,38 @@ def _fetch_admission_fee(place: Dict[str, Any]) -> Optional[int]:
         return None
 
     return parse_usefee_amount(usefee_text)
+
+
+def _fetch_price_level(place: Dict[str, Any]) -> Optional[str]:
+    """
+    음식점의 Google Places priceLevel(가격대)을 가져온다. 이름만으로는 오매칭 위험이
+    있어 find_place와 동일하게 좌표(TourAPI mapx/mapy)를 같이 넘긴다. 매칭 실패/이름이
+    없으면 None을 반환해서 호출부(cost_rules)가 기본 추정치로 대체하게 한다.
+    """
+
+    title = place.get("title")
+    if not title:
+        return None
+
+    try:
+        return cached_call(
+            namespace="google_places_price_level",
+            params={
+                "title": title,
+                "address": place.get("address"),
+                "latitude": place.get("latitude"),
+                "longitude": place.get("longitude"),
+            },
+            fetch_fn=lambda: get_price_level(
+                title,
+                address=place.get("address"),
+                lat=place.get("latitude"),
+                lng=place.get("longitude"),
+            ),
+            ttl_seconds=60 * 60 * 24,
+        )
+    except GooglePlacesAPIError:
+        return None
 
 
 def _fetch_lodging_fee_per_night(
@@ -131,6 +175,15 @@ def build_financial_summary(
     ]
     place_fees = [_fetch_admission_fee(place) for place in non_lodging_places]
 
+    restaurant_type_places = [
+        place for place in selected_places
+        if _resolve_content_type_id(place) == RESTAURANT_CONTENT_TYPE_ID
+    ]
+    meal_places = [place for place in restaurant_type_places if not _is_cafe_place(place)]
+    cafe_places = [place for place in restaurant_type_places if _is_cafe_place(place)]
+    meal_price_levels = [_fetch_price_level(place) for place in meal_places]
+    cafe_price_levels = [_fetch_price_level(place) for place in cafe_places]
+
     # Route Planner가 1박 이상이면 lodging_place를 명시적으로 골라서 넘겨준다(보장된 경로).
     # 혹시 없으면(Mock fallback 등) selected_places에 우연히 섞인 숙박 장소를 대신 찾는다.
     lodging_candidates = [route_plan["lodging_place"]] if route_plan.get("lodging_place") else [
@@ -156,6 +209,8 @@ def build_financial_summary(
         nights=nights,
         place_fees=place_fees,
         lodging_override=lodging_override,
+        meal_price_levels=meal_price_levels,
+        cafe_price_levels=cafe_price_levels,
     )
 
     return {

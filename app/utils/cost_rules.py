@@ -112,8 +112,72 @@ def estimate_food_cost(people_count: int, days: int = 2) -> int:
     return 30000 * people_count * days
 
 
+# Google Places(New) priceLevel enum -> 1인당 한 끼 식사비(KRW) 추정치.
+GOOGLE_PRICE_LEVEL_TO_KRW_PER_PERSON = {
+    "PRICE_LEVEL_FREE": 0,
+    "PRICE_LEVEL_INEXPENSIVE": 10000,
+    "PRICE_LEVEL_MODERATE": 20000,
+    "PRICE_LEVEL_EXPENSIVE": 35000,
+    "PRICE_LEVEL_VERY_EXPENSIVE": 60000,
+}
+# priceLevel을 못 구한 끼니에 쓰는 폴백 — 기존 고정 단가(1인당 30000원/일 = 점심·저녁
+# 2끼, route_planner의 MEAL_TIME_SLOTS 기준)와 맞춘 값이라 데이터가 전혀 없을 때는
+# 이전 추정치와 동일한 총액이 나온다.
+DEFAULT_MEAL_FEE_PER_PERSON = 15000
+
+
+def estimate_food_cost_from_places(
+    people_count: int,
+    price_levels: List[Optional[str]],
+) -> int:
+    """
+    실제 식사 장소(음식점)별 Google Places priceLevel로 식비를 추정합니다.
+    priceLevel을 못 구한 장소(매칭 실패/데이터 미등록)는 DEFAULT_MEAL_FEE_PER_PERSON으로
+    대체합니다 — admission fee의 place_fees 하이브리드 방식과 동일한 패턴입니다.
+    """
+
+    total = 0
+    for level in price_levels:
+        per_person = GOOGLE_PRICE_LEVEL_TO_KRW_PER_PERSON.get(level, DEFAULT_MEAL_FEE_PER_PERSON)
+        total += per_person * people_count
+
+    return total
+
+
 def estimate_cafe_cost(people_count: int, cafe_visits: int = 1) -> int:
     return 15000 * people_count * cafe_visits
+
+
+# Google Places(New) priceLevel enum -> 1인당 카페 방문 1회 비용(KRW) 추정치.
+# 식사(GOOGLE_PRICE_LEVEL_TO_KRW_PER_PERSON)보다 낮게 잡음 — 같은 priceLevel이라도
+# 카페 방문은 보통 음료/디저트 한두 개라 식사 한 끼보다 단가가 낮다.
+GOOGLE_PRICE_LEVEL_TO_CAFE_KRW_PER_PERSON = {
+    "PRICE_LEVEL_FREE": 0,
+    "PRICE_LEVEL_INEXPENSIVE": 6000,
+    "PRICE_LEVEL_MODERATE": 10000,
+    "PRICE_LEVEL_EXPENSIVE": 18000,
+    "PRICE_LEVEL_VERY_EXPENSIVE": 30000,
+}
+# priceLevel을 못 구한 카페 방문에 쓰는 폴백 — 기존 고정 단가(1인당 15000원 × 방문 1회)와
+# 맞춘 값이라 데이터가 전혀 없을 때는 이전 추정치와 동일한 총액이 나온다.
+DEFAULT_CAFE_FEE_PER_PERSON = 15000
+
+
+def estimate_cafe_cost_from_places(
+    people_count: int,
+    price_levels: List[Optional[str]],
+) -> int:
+    """
+    실제 카페 장소별 Google Places priceLevel로 카페비를 추정합니다. estimate_food_cost_from_places
+    와 동일한 하이브리드 패턴이며, priceLevel을 못 구한 곳은 DEFAULT_CAFE_FEE_PER_PERSON으로 대체합니다.
+    """
+
+    total = 0
+    for level in price_levels:
+        per_person = GOOGLE_PRICE_LEVEL_TO_CAFE_KRW_PER_PERSON.get(level, DEFAULT_CAFE_FEE_PER_PERSON)
+        total += per_person * people_count
+
+    return total
 
 
 def estimate_lodging_cost(people_count: int, nights: int = 1) -> int:
@@ -150,14 +214,26 @@ def build_cost_summary(
     cafe_visits: int = 1,
     place_fees: Optional[List[Optional[int]]] = None,
     lodging_override: Optional[int] = None,
+    meal_price_levels: Optional[List[Optional[str]]] = None,
+    cafe_price_levels: Optional[List[Optional[str]]] = None,
 ) -> dict:
     """
     lodging_override(실제 숙박 후보의 detailInfo2 객실 요금 × 박수)가 있으면 그 값을 쓰고,
     없으면(숙박 후보가 없거나 요금 정보를 못 구함) 인원수·박수 기반 기본 추정치를 씁니다.
+    meal_price_levels/cafe_price_levels(실제 식사·카페 장소별 Google Places priceLevel)가
+    있으면 그걸로 식비/카페비를 계산하고, 없으면(후보가 없는 경우) 고정 단가를 씁니다.
     """
 
-    food = estimate_food_cost(people_count, days)
-    cafe = estimate_cafe_cost(people_count, cafe_visits)
+    food = (
+        estimate_food_cost_from_places(people_count, meal_price_levels)
+        if meal_price_levels
+        else estimate_food_cost(people_count, days)
+    )
+    cafe = (
+        estimate_cafe_cost_from_places(people_count, cafe_price_levels)
+        if cafe_price_levels
+        else estimate_cafe_cost(people_count, cafe_visits)
+    )
     lodging = (
         lodging_override
         if lodging_override is not None

@@ -16,11 +16,14 @@ COORDINATOR_PARSE_SYSTEM_PROMPT = """
   "season": "계절 또는 시기",
   "duration": "여행 기간",
   "travel_style": ["취향1", "취향2"],
+  "must_include_places": ["장소명1", "장소명2"],
   "schedule_intensity": "여유로운 일정 또는 빡빡한 일정",
   "prefer_local": true 또는 false,
   "prefer_budget": true 또는 false,
   "is_peak_season": true 또는 false
 }
+
+must_include_places는 사용자가 "여기는 꼭 가고 싶어", "중간에 00을 넣어서", "00 위주로 짜줘"와 같이 명시적으로 방문을 원하거나 코스에 포함해달라고 지정한 특정 장소(명소, 식당, 카페 등)의 이름들을 리스트로 추출해라. 없으면 빈 리스트 []를 넣어라.
 
 prefer_local은 사용자가 "로컬만 아는 곳", "현지인이 가는 곳", "사람 안 몰리는 곳",
 "한적한 곳", "숨은 명소", "관광객 없는 곳", "핫플 말고" 같이 유명 관광지보다
