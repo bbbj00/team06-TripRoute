@@ -17,7 +17,6 @@ RUN uv sync \
     --no-dev \
     --no-install-project
 
-
 # ==============================
 # 2단계: 실제 실행 이미지
 # ==============================
@@ -29,11 +28,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/app/.venv/bin:$PATH"
 
-# builder에서 설치한 Python 환경만 복사
-COPY --from=builder /app/.venv /app/.venv
+# 애플리케이션 실행용 일반 사용자 생성
+RUN addgroup --system appgroup \
+    && adduser --system --ingroup appgroup appuser
 
-# 애플리케이션 소스 복사
-COPY . .
+# 가상환경과 소스 코드를 일반 사용자 소유로 복사
+COPY --from=builder --chown=appuser:appgroup /app/.venv /app/.venv
+COPY --chown=appuser:appgroup . .
+
+# 이후 명령은 root가 아닌 appuser 권한으로 실행
+USER appuser
 
 EXPOSE 8000
 
