@@ -1,5 +1,6 @@
 import app.agents.route_planner as route_planner
 from app.agents.route_planner import (
+    _build_place_reason,
     _build_taste_text,
     _build_time_slots,
     _check_daily_density,
@@ -7,6 +8,7 @@ from app.agents.route_planner import (
     _filter_places_within_radius,
     _haversine_km,
     _normalize_rag_place,
+    _reorder_places_for_time_slots,
     _search_lodging_place,
     _sort_by_prefer_local,
     _sort_by_rating_desc,
@@ -78,9 +80,9 @@ def test_filter_places_within_radius_with_anchor_only_returns_new_matches():
 
 def test_sort_by_prefer_local_ascending_when_true():
     places = [
-        _normalize_rag_place({"title": "A", "review_count": 500}, "reason"),
-        _normalize_rag_place({"title": "B", "review_count": 10}, "reason"),
-        _normalize_rag_place({"title": "C", "review_count": 100}, "reason"),
+        _normalize_rag_place({"title": "A", "review_count": 500}, []),
+        _normalize_rag_place({"title": "B", "review_count": 10}, []),
+        _normalize_rag_place({"title": "C", "review_count": 100}, []),
     ]
 
     result = _sort_by_prefer_local(places, prefer_local=True)
@@ -90,8 +92,8 @@ def test_sort_by_prefer_local_ascending_when_true():
 
 def test_sort_by_prefer_local_descending_when_false():
     places = [
-        _normalize_rag_place({"title": "A", "review_count": 10}, "reason"),
-        _normalize_rag_place({"title": "B", "review_count": 500}, "reason"),
+        _normalize_rag_place({"title": "A", "review_count": 10}, []),
+        _normalize_rag_place({"title": "B", "review_count": 500}, []),
     ]
 
     result = _sort_by_prefer_local(places, prefer_local=False)
@@ -101,14 +103,92 @@ def test_sort_by_prefer_local_descending_when_false():
 
 def test_sort_by_prefer_local_places_missing_review_count_last():
     places = [
-        _normalize_rag_place({"title": "없음"}, "reason"),
-        _normalize_rag_place({"title": "있음", "review_count": 5}, "reason"),
+        _normalize_rag_place({"title": "없음"}, []),
+        _normalize_rag_place({"title": "있음", "review_count": 5}, []),
     ]
 
     result = _sort_by_prefer_local(places, prefer_local=True)
 
     assert result[0]["name"] == "있음"
     assert result[1]["name"] == "없음"
+
+
+def test_build_place_reason_varies_by_review_count_and_rating():
+    # 리뷰수/평점이 다르면 추천 이유 문장도 달라져야 한다 (배치 전체에 동일 문구를 쓰던 버그 재발 방지)
+    popular = _build_place_reason("음식점", 4.5, 1200, ["먹거리"])
+    quiet = _build_place_reason("음식점", 3.8, 20, ["먹거리"])
+
+    assert popular != quiet
+    assert "1,200" in popular
+    assert "4.5" in popular
+    assert "인기" in popular
+    assert "인기" not in quiet
+
+
+def test_build_place_reason_handles_missing_signals():
+    reason = _build_place_reason(None, None, None, [])
+
+    assert "관광지" in reason
+    assert "여행" in reason
+
+
+def test_normalize_rag_place_reason_differs_per_place():
+    # 같은 배치에서 나온 두 장소라도 review_count/rating이 다르면 reason이 달라야 한다
+    place_a = _normalize_rag_place(
+        {"title": "A", "category": "음식점", "rating": 4.7, "review_count": 900},
+        ["먹거리"],
+    )
+    place_b = _normalize_rag_place(
+        {"title": "B", "category": "카페", "rating": 4.1, "review_count": 15},
+        ["먹거리"],
+    )
+
+    assert place_a["reason"] != place_b["reason"]
+    assert "900" in place_a["reason"]
+    assert "15" in place_b["reason"]
+
+
+def test_reorder_places_for_time_slots_prioritizes_restaurant_for_meal_slot():
+    time_slots = [("Day 1", "오전"), ("Day 1", "점심"), ("Day 1", "오후")]
+    places = [
+        {"name": "관광지1", "category": "관광지"},
+        {"name": "관광지2", "category": "관광지"},
+        {"name": "맛집", "category": "음식점"},
+    ]
+
+    result = _reorder_places_for_time_slots(places, time_slots)
+
+    assert len(result) == len(places)
+    assert result[1]["category"] == "음식점"
+    assert {p["name"] for p in result} == {"관광지1", "관광지2", "맛집"}
+
+
+def test_reorder_places_for_time_slots_no_restaurant_keeps_all_places():
+    time_slots = [("Day 1", "오전"), ("Day 1", "점심"), ("Day 1", "오후")]
+    places = [
+        {"name": "관광지1", "category": "관광지"},
+        {"name": "관광지2", "category": "문화시설"},
+        {"name": "관광지3", "category": None},
+    ]
+
+    result = _reorder_places_for_time_slots(places, time_slots)
+
+    assert len(result) == len(places)
+    assert {p["name"] for p in result} == {"관광지1", "관광지2", "관광지3"}
+
+
+def test_reorder_places_for_time_slots_extra_restaurants_fill_remaining_slots():
+    # 음식점 후보가 식사 시간대(1개)보다 많으면, 남는 음식점은 버려지지 않고 다른 슬롯에 배치되어야 한다
+    time_slots = [("Day 1", "오전"), ("Day 1", "점심")]
+    places = [
+        {"name": "맛집1", "category": "음식점"},
+        {"name": "맛집2", "category": "음식점"},
+    ]
+
+    result = _reorder_places_for_time_slots(places, time_slots)
+
+    assert len(result) == 2
+    assert {p["name"] for p in result} == {"맛집1", "맛집2"}
 
 
 def test_build_route_plan_uses_rag_result_when_available(monkeypatch):
@@ -295,6 +375,35 @@ def test_build_time_slots_drops_evening_in_winter():
     assert len(winter) < len(normal)
 
 
+def test_build_time_slots_packed_schedule_gets_extra_attraction_slot():
+    # 빡빡한 일정만 "늦은 오후" 관광지 슬롯이 추가로 붙어야 한다 (하루 관광지 3개)
+    relaxed = _build_time_slots(1, "여유로운 일정", season="여름")
+    normal = _build_time_slots(1, "보통", season="여름")
+    packed = _build_time_slots(1, "빡빡한 일정", season="여름")
+
+    assert ("Day 1", "늦은 오후") not in relaxed
+    assert ("Day 1", "늦은 오후") not in normal
+    assert ("Day 1", "늦은 오후") in packed
+    assert len(packed) == len(normal) + 1
+
+
+def test_build_time_slots_always_includes_lunch_regardless_of_intensity():
+    # 기존에는 여유로운 일정에 점심 슬롯이 아예 없었는데, 이제는 강도와 무관하게 항상 포함해야 한다
+    relaxed = _build_time_slots(1, "여유로운 일정", season="여름")
+    packed = _build_time_slots(1, "빡빡한 일정", season="여름")
+
+    assert ("Day 1", "점심") in relaxed
+    assert ("Day 1", "점심") in packed
+
+
+def test_build_time_slots_last_day_drops_dinner_but_keeps_lunch():
+    slots = _build_time_slots(2, "빡빡한 일정", season="여름")
+
+    assert ("Day 1", "저녁") in slots
+    assert ("Day 2", "저녁") not in slots
+    assert ("Day 2", "점심") in slots
+
+
 def test_build_time_slots_season_default_unaffected():
     default_slots = _build_time_slots(1, "여유로운 일정")
     summer_slots = _build_time_slots(1, "여유로운 일정", season="여름")
@@ -343,9 +452,9 @@ def test_check_daily_density_packed_has_higher_threshold():
 
 def test_sort_by_rating_desc_places_missing_rating_last():
     places = [
-        _normalize_rag_place({"title": "없음"}, "reason"),
-        _normalize_rag_place({"title": "5점", "rating": 5}, "reason"),
-        _normalize_rag_place({"title": "3점", "rating": 3}, "reason"),
+        _normalize_rag_place({"title": "없음"}, []),
+        _normalize_rag_place({"title": "5점", "rating": 5}, []),
+        _normalize_rag_place({"title": "3점", "rating": 3}, []),
     ]
 
     result = _sort_by_rating_desc(places)

@@ -27,6 +27,9 @@ COURSE_NEARBY_WINDOW = 2
 LODGING_CATEGORY = "숙박"
 LODGING_CONTENT_TYPE_ID = "32"
 
+RESTAURANT_CATEGORY = "음식점"
+MEAL_TIME_SLOTS = {"점심", "저녁"}
+
 EARTH_RADIUS_KM = 6371.0
 # RAG는 취향 유사도만 보고 거리는 전혀 고려하지 않아서, 취향 1등이 해변이고 2등이 반대편
 # 산간 지역이면 그대로 비효율적인 동선이 짜일 수 있음. 이미 선택된 후보들로부터 이 거리
@@ -163,15 +166,56 @@ def _get_place_name(place: Place) -> str:
     ).strip()
 
 
+def _format_place_signal(rating: Any, review_count: Any) -> str:
+    """평점/리뷰수를 추천 이유 앞에 붙일 문장 조각으로 만든다. 둘 다 없으면 빈 문자열."""
+    rating_value = _to_float(rating)
+
+    if rating_value is not None and review_count is not None:
+        return f"리뷰 {int(review_count):,}개, 평점 {rating_value:g}의 "
+    if review_count is not None:
+        return f"리뷰 {int(review_count):,}개의 "
+    if rating_value is not None:
+        return f"평점 {rating_value:g}의 "
+    return ""
+
+
+# 이 리뷰수 이상이면 추천 이유에 "인기"를 붙인다 (임의 기준 — 별도 통계적 근거는 없음)
+POPULAR_REVIEW_COUNT_THRESHOLD = 300
+
+
+def _build_place_reason(
+    category: str | None,
+    rating: Any,
+    review_count: Any,
+    travel_style: List[str],
+) -> str:
+    """
+    장소의 카테고리·평점·리뷰수를 반영해 추천 이유를 장소별로 다르게 만든다.
+    (기존에는 검색 배치 전체에 동일한 문자열을 재사용해 모든 장소의 추천 이유가 똑같았음)
+    """
+    category_text = category or "관광지"
+    style_text = ", ".join(travel_style) if travel_style else "여행"
+    signal = _format_place_signal(rating, review_count)
+
+    review_count_value = review_count if isinstance(review_count, (int, float)) else 0
+    popularity_prefix = "인기 " if review_count_value >= POPULAR_REVIEW_COUNT_THRESHOLD else ""
+
+    return (
+        f"{signal}{popularity_prefix}{category_text}인 곳으로, "
+        f"{style_text} 취향에 잘 맞습니다."
+    )
+
+
 def _normalize_tour_place(
     item: Dict[str, Any],
     source: str,
-    reason: str,
+    travel_style: List[str],
 ) -> Place:
     """
     TourAPI searchKeyword2 결과를 Route Planner 내부 형식으로 변환한다.
     """
     title = str(item.get("title") or "장소명 없음").strip()
+    category = content_type_id_to_category(item.get("contenttypeid"))
 
     return {
         "name": title,
@@ -187,8 +231,11 @@ def _normalize_tour_place(
             or item.get("sigungucode")
         ),
         "image_url": item.get("firstimage") or "",
-        "reason": reason,
+        "reason": _build_place_reason(category, None, None, travel_style),
         "source": source,
+        "category": category,
+        "rating": None,
+        "review_count": None,
         "raw": item,
     }
 
@@ -202,7 +249,7 @@ def _build_taste_text(travel_style: List[str], prefer_local: bool) -> str:
     return f"{style_text}을(를) 좋아하는 여행"
 
 
-def _normalize_rag_place(item: Dict[str, Any], reason: str) -> Place:
+def _normalize_rag_place(item: Dict[str, Any], travel_style: List[str]) -> Place:
     """
     match_places RPC 결과(Supabase places 테이블 행)를 Route Planner 내부 형식으로 변환한다.
 
@@ -210,6 +257,9 @@ def _normalize_rag_place(item: Dict[str, Any], reason: str) -> Place:
     두고, 이후 _fill_missing_place_details()에서 TourAPI로 보완한다.
     """
     title = str(item.get("title") or "장소명 없음").strip()
+    category = item.get("category")
+    rating = item.get("rating")
+    review_count = item.get("review_count")
 
     return {
         "name": title,
@@ -221,11 +271,11 @@ def _normalize_rag_place(item: Dict[str, Any], reason: str) -> Place:
         "area_code": None,
         "signgu_code": None,
         "image_url": "",
-        "reason": reason,
+        "reason": _build_place_reason(category, rating, review_count, travel_style),
         "source": "rag",
-        "rating": item.get("rating"),
-        "review_count": item.get("review_count"),
-        "category": item.get("category"),
+        "rating": rating,
+        "review_count": review_count,
+        "category": category,
         "similarity": item.get("similarity"),
         "raw": item,
     }
@@ -311,14 +361,8 @@ def _search_rag_places(
     if not results:
         return []
 
-    reason = (
-        f"{', '.join(travel_style)} 취향과 RAG 유사도가 높은 {city} 지역 관광지입니다."
-        if travel_style
-        else f"{city} 지역의 관광지 후보입니다."
-    )
-
     places = _deduplicate_places(
-        [_normalize_rag_place(item, reason) for item in results]
+        [_normalize_rag_place(item, travel_style) for item in results]
     )
 
     return _sort_by_prefer_local(places, prefer_local)
@@ -371,6 +415,7 @@ def _search_lodging_place(
     prefer_budget: bool = False,
     people_count: int = 1,
     is_peak_season: bool = False,
+    travel_style: List[str] | None = None,
 ) -> Place | None:
     """
     1박 이상 여행일 때 숙박 후보를 하나 골라서 반환한다. RAG로 "숙박/호텔" 관련
@@ -397,7 +442,7 @@ def _search_lodging_place(
 
     lodging_places = _deduplicate_places(
         [
-            _normalize_rag_place(item, f"{city} 숙박 후보입니다.")
+            _normalize_rag_place(item, travel_style or [])
             for item in results
             if item.get("category") == LODGING_CATEGORY
         ]
@@ -438,6 +483,62 @@ def _search_lodging_place(
     return ranked[0]
 
 
+def _search_restaurant_places(
+    city: str,
+    anchor_places: List[Place],
+    max_restaurants: int,
+    travel_style: List[str],
+    prefer_local: bool = False,
+) -> List[Place]:
+    """
+    점심/저녁 시간대에 배정할 음식점 후보를 명시적으로 확보한다.
+
+    _search_rag_places는 취향 텍스트 전체와의 유사도만으로 후보를 뽑기 때문에, 사용자가
+    "먹거리"를 취향으로 꼽아도 관광지/카페 쪽 텍스트가 더 유사하면 후보 풀에 음식점이
+    하나도 안 뽑힐 수 있다. _reorder_places_for_time_slots는 이미 뽑힌 후보 중에서만
+    음식점을 골라 점심/저녁 슬롯에 배치하므로, 애초에 후보 풀에 음식점이 없으면 아무리
+    슬롯 배정을 잘해도 식사 시간대에 관광지가 그대로 들어가는 문제가 있었다.
+    (_search_lodging_place가 숙박 후보를 별도로 확보하는 것과 동일한 이유로,
+    음식점도 "취향 유사도 최상위 후보"에만 의존하지 않고 카테고리로 직접 검색해서
+    확보한다.)
+    """
+    if max_restaurants <= 0:
+        return []
+
+    taste_text = _build_taste_text(travel_style + ["맛집", "음식점"], prefer_local=False)
+
+    try:
+        results = retrieve_places_by_taste(
+            taste_text,
+            match_count=max(max_restaurants * 3, 10),
+            city=city,
+        )
+    except Exception:
+        return []
+
+    restaurant_places = _deduplicate_places(
+        [
+            _normalize_rag_place(item, travel_style)
+            for item in results
+            if item.get("category") == RESTAURANT_CATEGORY
+        ]
+    )
+    if not restaurant_places:
+        return []
+
+    restaurant_places = _fill_missing_place_details(restaurant_places)
+    restaurant_places = _filter_places_within_radius(
+        restaurant_places,
+        anchor_places=anchor_places,
+    )
+    if not restaurant_places:
+        return []
+
+    restaurant_places = _sort_by_prefer_local(restaurant_places, prefer_local)
+
+    return restaurant_places[:max_restaurants]
+
+
 def _deduplicate_places(places: List[Place]) -> List[Place]:
     result: List[Place] = []
     seen: set[str] = set()
@@ -474,21 +575,32 @@ def _build_time_slots(
     schedule_intensity: str,
     season: str = "",
 ) -> List[Tuple[str, str]]:
-    # 겨울은 일조시간이 짧아 저녁 시간대 야외 일정이 부담스러우므로 저녁 슬롯을 아예 뺀다.
-    # (계절이 몇 시에 해가 지는지까지 정밀 반영하긴 어려우니, "저녁 슬롯 유무"라는 단순한
-    # 방식으로 근사함 — 봄/여름/가을은 기존과 동일)
-    is_short_daylight_season = "겨울" in season
+    """
+    하루 일정의 시간대 슬롯을 만든다.
 
-    if "여유" in schedule_intensity:
-        normal_slots = ["오전", "오후"] if is_short_daylight_season else ["오전", "오후", "저녁"]
-        last_day_slots = ["오전", "오후"]
-    else:
-        normal_slots = (
-            ["오전", "점심", "오후"]
-            if is_short_daylight_season
-            else ["오전", "점심", "오후", "저녁"]
-        )
-        last_day_slots = ["오전", "점심", "오후"]
+    관광지 슬롯(오전/오후, 빡빡한 일정은 "늦은 오후" 추가)의 개수는 일정 강도로
+    정해진다 — 빡빡한 일정=3개, 그 외(보통/여유로운 일정)=2개. 점심/저녁 식당
+    슬롯은 일정 강도와 무관하게 항상 포함한다(관광지 개수와 별개로 늘 챙김).
+
+    겨울은 일조시간이 짧아 저녁 시간대 야외 일정이 부담스러우므로 저녁 슬롯을 뺀다.
+    (계절이 몇 시에 해가 지는지까지 정밀 반영하긴 어려우니, "저녁 슬롯 유무"라는 단순한
+    방식으로 근사함 — 봄/여름/가을은 기존과 동일)
+
+    여행 마지막 날은 저녁 전에 귀가/이동하는 경우가 많아 저녁 슬롯을 뺀다.
+    """
+    is_short_daylight_season = "겨울" in season
+    attraction_count = 3 if "빡빡" in schedule_intensity else 2
+
+    def build_day_slots(include_dinner: bool) -> List[str]:
+        slots = ["오전", "점심", "오후"]
+        if attraction_count >= 3:
+            slots.append("늦은 오후")
+        if include_dinner:
+            slots.append("저녁")
+        return slots
+
+    normal_slots = build_day_slots(include_dinner=not is_short_daylight_season)
+    last_day_slots = build_day_slots(include_dinner=False)
 
     result: List[Tuple[str, str]] = []
 
@@ -508,6 +620,7 @@ def _build_time_slots(
 def _search_real_places(
     city: str,
     max_places: int,
+    travel_style: List[str],
 ) -> List[Place]:
     items = search_keyword(
         keyword=city,
@@ -520,7 +633,7 @@ def _search_real_places(
             _normalize_tour_place(
                 item=item,
                 source="tour_api",
-                reason=f"{city} 지역의 관광지 후보입니다.",
+                travel_style=travel_style,
             )
             for item in items
         ]
@@ -749,6 +862,44 @@ def _build_real_routes(
         )
 
     return routes, warnings
+
+
+def _reorder_places_for_time_slots(
+    selected_places: List[Place],
+    time_slots: List[Tuple[str, str]],
+) -> List[Place]:
+    """
+    점심/저녁 시간대에는 음식점 카테고리 장소를 우선 배정한다.
+    (기존에는 selected_places를 시간대와 순서대로 그대로 zip해서, 식사 시간대에
+    식당이 아니라 검색 순서상 먼저 나온 아무 장소나 배치되는 문제가 있었음)
+
+    장소 개수와 시간대 개수가 다를 수 있어 selected_places 길이 기준으로만 슬롯을 본다
+    (_build_daily_schedule도 동일하게 앞쪽 len(selected_places)개 슬롯만 사용함).
+    """
+    meal_indexes = [
+        index
+        for index, (_, time_slot) in enumerate(time_slots[: len(selected_places)])
+        if time_slot in MEAL_TIME_SLOTS
+    ]
+
+    food_places = [p for p in selected_places if p.get("category") == RESTAURANT_CATEGORY]
+    other_places = [p for p in selected_places if p.get("category") != RESTAURANT_CATEGORY]
+
+    ordered: List[Place | None] = [None] * len(selected_places)
+    remaining_meal_indexes = list(meal_indexes)
+
+    for place in food_places:
+        if remaining_meal_indexes:
+            ordered[remaining_meal_indexes.pop(0)] = place
+        else:
+            # 식사 시간대가 이미 다 찼으면 나머지 일반 시간대에 배치한다
+            other_places.append(place)
+
+    empty_indexes = [index for index, place in enumerate(ordered) if place is None]
+    for index, place in zip(empty_indexes, other_places):
+        ordered[index] = place
+
+    return [place for place in ordered if place is not None]
 
 
 def _build_daily_schedule(
@@ -1021,6 +1172,7 @@ def build_route_plan(
             candidate_places = _search_real_places(
                 city=city,
                 max_places=max_places,
+                travel_style=travel_style,
             )
             data_source = "real_api"
         except Exception:
@@ -1053,14 +1205,28 @@ def build_route_plan(
         anchor_places=candidate_places,
     )
 
+    # candidate_places/related_places는 취향 유사도 순위만으로 뽑혀서 음식점이 하나도
+    # 안 섞여 있을 수 있다 — 점심/저녁 슬롯 수만큼 음식점 후보를 별도로 확보해서
+    # _reorder_places_for_time_slots가 실제로 배정할 대상이 있게 한다.
+    meal_slot_count = sum(1 for _, time_slot in time_slots if time_slot in MEAL_TIME_SLOTS)
+    restaurant_places = _search_restaurant_places(
+        city=city,
+        anchor_places=candidate_places,
+        max_restaurants=meal_slot_count,
+        travel_style=travel_style,
+        prefer_local=prefer_local,
+    )
+
     candidate_count = max(
         1,
-        max_places - len(related_places),
+        max_places - len(related_places) - len(restaurant_places),
     )
     selected_places = _deduplicate_places(
         candidate_places[:candidate_count]
         + related_places
+        + restaurant_places
     )[:max_places]
+    selected_places = _reorder_places_for_time_slots(selected_places, time_slots)
 
     route_summary, route_warnings = _build_real_routes(
         selected_places=selected_places,
@@ -1096,6 +1262,7 @@ def build_route_plan(
             prefer_budget=prefer_budget,
             people_count=people_count,
             is_peak_season=is_peak_season,
+            travel_style=travel_style,
         )
         if travel_days > 1
         else None

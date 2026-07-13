@@ -169,42 +169,89 @@ def clear_chat():
 
 
 # ---------------------------------------------------------
-# Claude.ai 스타일 CSS (docs/ui_claude_design_spec.md 기준)
+# "CHAT A.I+" 스타일 CSS (docs/ui_claude_design_spec.md 기준)
 # ---------------------------------------------------------
 CUSTOM_CSS = """
 :root {
-    --tr-bg: #F5F4ED;
-    --tr-surface: #FAFAF7;
-    --tr-primary: #C4633F;
-    --tr-primary-hover: #B0532F;
-    --tr-text: #3D3929;
-    --tr-text-muted: #6B6A62;
-    --tr-border: #D8D5C9;
-    --tr-bubble-user: #EDEADF;
+    --tr-outer-bg: #C9D6F2;
+    --tr-card-bg: #FFFFFF;
+    --tr-primary: #6C63FF;
+    --tr-primary-hover: #5A52E0;
+    --tr-text: #1A1A1A;
+    --tr-text-muted: #8B8D98;
+    --tr-border: #EDEDF2;
+    --tr-selected-bg: #EEF0FC;
+    --tr-pill-bg: #F3F3F8;
+    --tr-table-bg: #FAFAFC;
+    --tr-table-header-bg: #F1F1FA;
 
-    /* Gradio 내장 컴포넌트(라디오/슬라이더) 포인트 컬러 오버라이드 */
+    /* Gradio 내장 컴포넌트(라디오/슬라이더/탭 밑줄 등) 포인트 컬러 오버라이드.
+       --color-accent은 Gradio 테마 전역 포인트 컬러라, 이걸 안 바꾸면 탭 선택
+       밑줄 등 일부 내장 컴포넌트가 기본 테마 오렌지색으로 그대로 남는다. */
+    --color-accent: var(--tr-primary);
+    --color-accent-soft: var(--tr-selected-bg);
     --checkbox-background-color-selected: var(--tr-primary);
     --checkbox-background-color-selected-dark: var(--tr-primary);
     --checkbox-border-color-selected: var(--tr-primary);
     --checkbox-label-background-fill-selected: var(--tr-primary);
     --slider-color: var(--tr-primary);
+    --button-primary-background-fill: var(--tr-primary);
+    --button-primary-background-fill-hover: var(--tr-primary-hover);
+}
+
+/* 시스템이 다크모드여도 이 앱은 항상 라이트 톤으로 고정한다.
+   Gradio는 OS가 다크모드면 루트에 .dark 클래스를 붙이고 자체 다크 테마 변수
+   (--background-fill-primary 등)를 쓰는데, 위 :root 오버라이드만으로는 특정
+   클래스(챗봇/입력창/버튼 등)에 안 붙어 있어서 검정 배경+흰 글씨가 그대로 남았다.
+   :root와 .dark 양쪽에 동일한 라이트 값을 강제해서 다크모드 여부와 무관하게
+   항상 같은 톤이 나오게 한다. */
+.gradio-container,
+.gradio-container * {
+    color-scheme: light !important;
+}
+
+:root,
+.dark {
+    --background-fill-primary: #FFFFFF !important;
+    --body-background-fill: var(--tr-outer-bg) !important;
+    --block-background-fill: var(--tr-card-bg) !important;
+    --input-background-fill: #FFFFFF !important;
+    --body-text-color: var(--tr-text) !important;
+    --border-color-primary: var(--tr-border) !important;
+}
+
+/* 라디오/슬라이더/체크박스 선택 색이 브라우저 기본(오렌지 계열)으로 남지 않도록
+   특정 컴포넌트 클래스가 아니라 네이티브 accent-color로 전역 지정한다. */
+input[type="radio"],
+input[type="range"],
+input[type="checkbox"] {
+    accent-color: var(--tr-primary) !important;
+}
+
+body {
+    background: var(--tr-outer-bg) !important;
 }
 
 .gradio-container {
-    max-width: 1050px !important;
-    margin: 0 auto !important;
-    background: var(--tr-bg) !important;
+    max-width: 1440px !important;
+    margin: 40px auto !important;
+    background: var(--tr-card-bg) !important;
+    border-radius: 24px !important;
+    box-shadow: 0 20px 60px rgba(40, 50, 110, 0.15);
     font-family: "Pretendard", "Inter", -apple-system, sans-serif;
+    padding: 8px 32px 32px !important;
 }
 
 #title-box {
     text-align: center;
-    margin-bottom: 12px;
+    margin-bottom: 4px;
 }
 
 #title-box h1 {
     color: var(--tr-text);
     font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
     margin-bottom: 4px;
 }
 
@@ -212,74 +259,103 @@ CUSTOM_CSS = """
     color: var(--tr-text-muted);
 }
 
-.option-box {
-    background: var(--tr-surface) !important;
+/* 사이드바 (여행 설정) */
+.sidebar {
+    background: var(--tr-card-bg) !important;
     border: 1px solid var(--tr-border) !important;
     border-radius: 16px !important;
-    padding: 20px !important;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+    padding: 24px !important;
+}
+
+#new-chat-button {
+    background: var(--tr-primary) !important;
+    color: #fff !important;
+    border-radius: 999px !important;
+    font-weight: 700;
+    min-height: 44px;
+}
+#new-chat-button:hover {
+    background: var(--tr-primary-hover) !important;
 }
 
 #chatbot {
     min-height: 420px;
-    background: var(--tr-bg) !important;
-    border-radius: 16px;
+    background: var(--tr-card-bg) !important;
 }
 
-/* 사용자 버블만 색을 입히고, AI 응답은 카드 없이 배경 위에 흐르듯 표시 */
-#chatbot .panel.user-row {
-    background-color: var(--tr-bubble-user) !important;
-    border-radius: 18px !important;
+/* 유저/AI 발화 모두 카드 없이, 아래 구분선만 */
+#chatbot .message-row {
+    border-bottom: 1px solid var(--tr-border);
 }
+#chatbot .panel.user-row,
 #chatbot .panel.bot-row {
     background: transparent !important;
 }
 
-/* 결과 패널 markdown 표 스타일 */
+/* 결과 패널: 표마다 카드로 구분 */
 #result-panel table {
-    border-collapse: collapse;
+    background: var(--tr-table-bg);
+    border: 1px solid var(--tr-border);
+    border-radius: 16px;
+    border-collapse: separate;
+    border-spacing: 0;
+    overflow: hidden;
     width: 100%;
 }
 #result-panel th {
-    background: var(--tr-surface);
-    border: 1px solid var(--tr-border);
+    background: var(--tr-table-header-bg);
+    color: #4A4A55;
     padding: 8px 12px;
+    text-align: left;
 }
 #result-panel td {
-    border: 1px solid var(--tr-border);
     padding: 8px 12px;
+    border-top: 1px solid var(--tr-border);
 }
 
+#message-input textarea {
+    border-radius: 28px !important;
+    border: 1px solid var(--tr-border) !important;
+    box-shadow: 0 8px 24px rgba(40, 50, 110, 0.08);
+}
 #message-input textarea:focus {
     border-color: var(--tr-primary) !important;
 }
 
 #send-button {
     min-height: 44px;
+    min-width: 44px;
     font-weight: 700;
     background: var(--tr-primary) !important;
     color: #fff !important;
-    border-radius: 12px;
+    border-radius: 999px !important;
 }
-
 #send-button:hover {
     background: var(--tr-primary-hover) !important;
 }
-
-@media (prefers-color-scheme: dark) {
-    :root {
-        --tr-bg: #1F1E1D;
-        --tr-surface: #2B2A28;
-        --tr-text: #E8E6DC;
-        --tr-text-muted: #B5B3A8;
-        --tr-border: #3A3835;
-        --tr-bubble-user: #3A362E;
-    }
-}
 """
 
-# Pretendard 웹폰트 실제 로딩 (CUSTOM_CSS의 font-family 지정만으로는 로드되지 않음)
+# Pretendard 웹폰트 실제 로딩 (CUSTOM_CSS의 font-family 지정만으로는 로드되지 않음) +
+# 시스템 다크모드여도 항상 라이트로 강제.
+#
+# Gradio는 `<head data-gradio-mode>window.__gradio_mode__ = "app";</script>`를 정적 HTML에
+# 동기 스크립트로 직접 박아두고, `head=`로 넘긴 커스텀 스크립트는 클라이언트가 /config를
+# 받아온 "뒤에" 동적으로 주입한다 — 이미 Gradio 프론트엔드가 다크/라이트를 판단하는 시점(앱
+# 마운트 시)보다 늦게 실행돼서 window.__gradio_mode__를 여기서 바꿔봐야 소용없다(직접 확인:
+# Playwright로 다크모드 에뮬레이션 후 body에 "dark" 클래스가 계속 남아있는 것으로 검증).
+# 반면 URL 쿼리 파라미터 `?__theme=light`는 Gradio가 테마를 판단하는 바로 그 시점에
+# window.location에서 즉시 읽으므로 타이밍 문제가 없다(Playwright로 확인 완료). 그래서
+# 최초 진입 시 이 파라미터가 없으면 붙여서 한 번 리다이렉트시키는 방식으로 강제한다.
 HEAD_HTML = """
+<script>
+(function () {
+  var url = new URL(window.location.href);
+  if (url.searchParams.get("__theme") !== "light") {
+    url.searchParams.set("__theme", "light");
+    window.location.replace(url.toString());
+  }
+})();
+</script>
 <link rel="stylesheet" as="style" crossorigin
   href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css" />
 """
@@ -303,11 +379,11 @@ Solar API와 Agentic Workflow를 활용한 국내 여행 일정 생성 챗봇
 
     with gr.Row():
 
-        # 왼쪽 설정 영역
+        # 왼쪽 사이드바 (여행 설정)
         with gr.Column(
             scale=1,
             min_width=250,
-            elem_classes=["option-box"],
+            elem_classes=["sidebar"],
         ):
             gr.Markdown("### 여행 설정")
 
@@ -331,8 +407,9 @@ Solar API와 Agentic Workflow를 활용한 국내 여행 일정 생성 챗봇
             )
 
             clear_button = gr.Button(
-                "대화 초기화",
+                "새 대화 시작",
                 variant="secondary",
+                elem_id="new-chat-button",
             )
 
             gr.Markdown(
@@ -357,6 +434,8 @@ Solar API와 Agentic Workflow를 활용한 국내 여행 일정 생성 챗봇
                 height=420,
                 elem_id="chatbot",
                 value=[{"role": "assistant", "content": WELCOME_MESSAGE}],
+                buttons=["copy"],
+                feedback_options=("Like", "Dislike"),
             )
 
             message_input = gr.Textbox(
@@ -455,6 +534,7 @@ if __name__ == "__main__":
         server_port=7860,
         share=False,
         show_error=True,
+        theme=gr.themes.Default(),
         css=CUSTOM_CSS,
         head=HEAD_HTML,
     )

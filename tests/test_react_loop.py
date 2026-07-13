@@ -37,4 +37,11 @@ def test_react_loop_gangneung_mock_scenario(monkeypatch):
 
     assert len(result["route_summary"]) >= 1
     assert result["cost_summary"]["total"] > 0
-    assert len(result["react_trace"]) == 6
+    # LangGraph 실제 실행 노드 수(parse -> route_planner -> financial -> finalize)만큼 트레이스가 남는다
+    assert len(result["react_trace"]) == 4
+    assert [entry["action"] for entry in result["react_trace"]] == [
+        "parse_trip_request",
+        "build_route_plan",
+        "build_financial_summary",
+        "finalize_response",
+    ]

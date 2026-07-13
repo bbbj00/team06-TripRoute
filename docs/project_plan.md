@@ -30,11 +30,24 @@
   - [x] `ui/`, `data/` (raw, cache, sample), `docs/`, `tests/`
 - [x] `app/core/config.py` — `.env` 환경변수 로드 로직 구현
 - [x] `app/main.py` — FastAPI 앱 초기화 및 기본 실행 확인 (`uvicorn app.main:app --reload`)
-- [ ] `ui/gradio_app.py` — Gradio 기본 UI 실행 확인 (파일은 생성됐지만 내용 비어있음 — 구현 필요)
+- [x] `ui/gradio_app.py` — Gradio UI 구현 및 실행 확인 완료. "CHAT A.I+" 스타일(인디고 포인트
+      컬러 + 라벤더 배경 + 2단 사이드바/채팅 레이아웃, `docs/ui_claude_design_spec.md` 기준)로
+      전체 재구성. 여행 계획 결과(일정/동선/비용/조건/주의사항/실행과정)는 챗봇 버블이 아니라
+      별도 탭형 "결과 패널"로 분리해 정보 밀도 문제 해결. 로딩 상태 표시, React trace 기본
+      숨김(탭 뒤로), 입력창 placeholder 처리까지 포함. Playwright로 실제 브라우저 end-to-end
+      확인 완료(콘솔 에러 없음).
 - [ ] `app/schemas/` — 요청/응답 Pydantic 모델 정의
   - [x] `request.py` (user_input, transport_mode, people_count)
   - [x] `response.py` (condition_summary, daily_schedule, route_summary, cost_summary, warnings)
-  - [ ] `place.py` (관광지 데이터 모델, 파일은 생성됐지만 내용 비어있음 — 구현 필요)
+  - [x] `place.py` (관광지 데이터 모델) — `Place` Pydantic 모델 자체는 정의 완료(content_id/
+        name/category/address/좌표/overview/운영시간/휴무일/이용요금/source). 단, 실제
+        코드(`route_planner.py` 등)는 이 모델 대신 여전히 느슨한 `Dict[str, Any]`로 장소를
+        주고받고 있어 검증에는 쓰이지 않는 상태.
+        > **보류 (나중에 확장 시 진행)**: 지금 스키마엔 실제로 쓰는 필드(rating/review_count/
+        > similarity/reason/content_type_id 등)가 빠져 있어서 확장부터 필요하고,
+        > `route_planner.py`/`financial.py`/`formatter.py`의 place 관련 코드를 대부분 손봐야
+        > 하는 범위가 넓은 작업. 장소 데이터를 별도 API로 공개하는 등 실제 검증이 필요해지는
+        > 시점에 진행. 지금은 새 기능 없이 내부 안정성만 개선하는 작업이라 우선순위 낮음.
 
 ---
 
@@ -44,8 +57,15 @@
 - [x] `app/tools/mock_tools.py` — `search_places` / `get_related_places` / `get_route_info` / `estimate_cost` Mock Tool 구현
 - [x] `app/tools/schemas.py` — `ToolResult` 스키마 정의 (⚠️ `ToolCall`은 정의만 되어있고 실제로는 미사용 — 아래 참고)
 - [x] `tests/test_react_loop.py`, `tests/conftest.py` — Mock ReAct Loop pytest 시나리오
-- [ ] 위 Mock Tool들을 Step 2의 실제 API 서비스(`tour_api.py`, `related_place_api.py`, `kakao_mobility.py`)로 교체
-- [ ] `react_loop.py`를 Step 3의 Coordinator/Route Planner/Financial 3-Agent + LangGraph 구조로 리팩터링
+- [x] 위 Mock Tool들을 Step 2의 실제 API 서비스로 교체 완료 — `route_planner.py`/`financial.py`가
+      RAG(Supabase)/`tour_api.py`/`kakao_mobility.py`를 기본 경로로 사용하고, `mock_tools.run_tool`은
+      RAG·실시간 API 둘 다 실패했을 때만 타는 최종 fallback(`_build_mock_fallback`)으로만 남음
+      (의도적으로 유지 — 아래 설계 결정 참고). 단 `related_place_api.py`는 코스 기반 연관 장소
+      검색으로 완전히 대체돼 지금은 어디서도 안 쓰이는 죽은 코드 상태(삭제 여부는 팀 논의 필요).
+- [x] `react_loop.py`를 Step 3의 Coordinator/Route Planner/Financial 3-Agent + LangGraph 구조로
+      리팩터링 완료 — `react_loop.py` → `coordinator.py` → `app/graph/workflow.py`(LangGraph
+      StateGraph: parse → route_planner → financial → finalize) 순으로 연결됨. 상세 내용은
+      `docs/langgraph_workflow.md` 참고.
 - [x] **설계 결정**: TripRoute는 절차가 항상 고정된 파이프라인이라 Tool Calling(LLM이 다음 행동을
       스스로 판단하는 ReAct 방식)을 도입하지 않기로 함. 대신 LangGraph 고정 그래프 + 각 Agent 내부의
       좁은 범위 LLM 호출(입력 분석/문장 생성/텍스트 구조화) 방식으로 감. 상세 근거는
@@ -127,6 +147,24 @@
         그대로 합쳐지는 걸 재점검 중 발견 — `anchor_places` 파라미터를 추가해 이미 확정된
         candidate_places 군집 기준으로 related_places도 15km 이내인지 걸러지도록 수정.
         테스트로 검증(anchor 기준 먼 곳 배제 확인).
+  - [x] **추천 이유(reason) 장소별 개인화**: 기존엔 검색 배치 전체가 동일한 reason 문자열을
+        공유해서(예: "RAG 유사도가 높은 강릉 지역 관광지입니다."가 모든 장소에 똑같이 붙음)
+        일정표의 "추천 이유" 열이 획일적이었음 — `_build_place_reason()`을 추가해 장소별
+        category/rating/review_count를 반영하도록 수정(`_normalize_rag_place`/
+        `_normalize_tour_place`). 실제 실행 확인: "리뷰 686개, 평점 4.2의 인기 관광지..."처럼
+        장소마다 다르게 나옴.
+  - [x] **식사 시간대 카테고리 배정**: 점심/저녁 시간대에 음식점이 아니라 아무 장소나 배치되던
+        문제 — `_reorder_places_for_time_slots()`로 `category == "음식점"`인 장소를 점심/저녁
+        슬롯에 우선 배정. 다만 RAG 랭킹 상위권에 음식점이 아예 안 뽑히는 경우가 있어(취향
+        유사도만 보고 카테고리를 안 보므로), `_search_lodging_place`와 동일한 패턴으로
+        `_search_restaurant_places()`를 추가해 점심/저녁 슬롯 수만큼 음식점 후보를 별도로
+        확보. real_api(TourAPI 실시간 검색) fallback 경로는 애초에 `category`를 채운 적이
+        없던 것도 같이 발견해 고침(`_normalize_tour_place`).
+  - [x] **일정 강도별 관광지 개수 차등화**: `_build_time_slots()`가 "보통"/"빡빡한 일정"을
+        구분 없이 똑같이 취급하고, "여유로운 일정"은 점심 슬롯 자체가 없던 구조를 재설계 —
+        이제 관광지 슬롯 개수는 일정 강도로 정해짐(빡빡한 일정=하루 3개, 그 외=2개)이고
+        점심/저녁은 강도와 무관하게 항상 포함(겨울철 저녁 제외, 마지막 날 저녁 제외 규칙은
+        유지). 테스트 4건 추가.
 - [x] `app/agents/financial.py` — 비용 계산 로직에 실측 데이터 반영 완료.
   - [x] **입장료(admission_cost)**: TourAPI `detailIntro2`의 usefee(비정형 텍스트)를
         `parse_usefee_amount()`(Upstage 구조화 추출, `FINANCIAL_USEFEE_PARSE_SYSTEM_PROMPT`)로
@@ -144,11 +182,28 @@
   - [x] 교통비 계산 시 하드코딩됐던 `travel_days=2`를 daily_schedule에서 실제 일수를 세도록 수정.
   - [x] `tests/test_financial.py`/`tests/test_route_planner.py`에 usefee 파싱, 인원수별 객실
         수용 여부, 성수기 요금, 0원 데이터 방어, 실요금 우선 선택 테스트 추가.
-- [ ] `app/graph/nodes.py` — 각 Agent를 LangGraph 노드로 래핑
-- [ ] `app/graph/edges.py` — Agent 실행 순서 및 조건 분기 정의
-- [ ] `app/graph/workflow.py` — 전체 그래프 조립 (Coordinator → Route Planner → Financial → Coordinator)
+- [x] `app/graph/nodes.py` — 각 Agent를 LangGraph 노드로 래핑 완료 (`parse_trip_request`/
+      `route_planner`/`financial`/`finalize` 4개 노드). `app/core/state.py`의 `TripRouteState`를
+      실제로 사용하도록 필드 확장(`total=False` + `warnings`/`react_trace`는
+      `Annotated[..., operator.add]` 리듀서로 누적). `react_trace`가 하드코딩된 6단계 설명이
+      아니라 실제 노드 실행 기록으로 바뀜(4단계).
+- [x] `app/graph/edges.py` — 노드 실행 순서 정의 완료(`LINEAR_EDGES`). 단, TripRoute Workflow는
+      분기 없는 선형 파이프라인이라 조건부 분기(`add_conditional_edges`)는 아직 없음 — RAG
+      실패 시 real_api/mock으로 넘어가는 fallback은 여전히 `route_planner.py` 내부 try/except로
+      처리 중(`docs/langgraph_workflow.md` "남은 여지" 참고).
+      > **보류 (나중에 확장 시 진행)**: RAG/real_api/mock 검색을 별도 노드로 쪼개고 조건부
+      > 엣지로 라우팅하면 `react_trace`에 어떤 데이터 소스를 탔는지 명시적으로 남고 향후
+      > 검색 소스 추가도 쉬워지지만, `build_route_plan()`이 이 fallback 말고도 코스 검색/
+      > 음식점 확보/재배치/동선 계산까지 한 함수에 다 있어서 분리 범위가 넓음. 데이터 소스를
+      > 추가하거나 fallback 경로 디버깅이 실제로 필요해지는 시점에 진행.
+- [x] `app/graph/workflow.py` — 그래프 조립 완료. `StateGraph(TripRouteState)`에 4개 노드를
+      선형으로 연결(parse → route_planner → financial → finalize)하고 `compile()`, 모듈 로드
+      시 1회 컴파일해 재사용. `app/agents/coordinator.py`는 이 그래프를 호출하는 얇은
+      wrapper로 축소(함수 시그니처/반환 형태 그대로 유지돼 react_loop.py/main.py/gradio_app.py
+      수정 불필요). 상세 내용은 `docs/langgraph_workflow.md` 참고.
 - [ ] Supabase 기반 LangGraph Checkpoint 저장 연결
-- [ ] `/trip/plan` 엔드포인트에서 Workflow end-to-end 실행 확인
+- [x] `/trip/plan` 엔드포인트에서 Workflow end-to-end 실행 확인 완료 (FastAPI `TestClient`로
+      실제 Solar/RAG/TourAPI/Kakao Mobility 연동까지 호출해 정상 응답 확인)
 
 ---
 
@@ -200,12 +255,15 @@
 
 ## Step 6. 최종 출력 포맷 구성
 
-- [ ] `app/utils/formatter.py` — State → 최종 응답 포맷 변환
-- [ ] 조건 요약 출력
-- [ ] 시간대별 일정표(Day/시간대/장소/추천이유/동선메모) 출력
-- [ ] 예상 비용표 출력 (교통비·식비·카페비·입장료·숙박비·총액)
-- [ ] 주의사항(warnings) 출력 — 대중교통 추정치 안내 문구 필수 포함
-- [ ] Gradio UI에서 결과 렌더링 (표 형태)
+- [x] `app/utils/formatter.py` — State → 최종 응답 Markdown 포맷 변환 완료 (섹션별 함수로 분리:
+      `format_condition_summary`/`format_daily_schedule`/`format_route_summary`/
+      `format_cost_summary`/`format_warnings`/`format_react_trace`)
+- [x] 조건 요약 출력
+- [x] 시간대별 일정표(Day/시간대/장소/추천이유/동선메모) 출력
+- [x] 예상 비용표 출력 (교통비·식비·카페비·입장료·숙박비·총액)
+- [x] 주의사항(warnings) 출력 — 대중교통 추정치 안내 문구 포함 확인(`finalize` 노드에서
+      `transport_mode == "대중교통"`일 때 항상 추가)
+- [x] Gradio UI에서 결과 렌더링 (표 형태) — 챗봇 버블이 아니라 탭형 결과 패널로 분리 렌더링
 - [ ] **UX: 파이프라인 진행상황 표시 + 최종 문장 스트리밍**
   - [ ] 앞 단계(관광지 검색 → RAG → 동선 계산 → 비용 계산) 진행 중 Gradio 상태 메시지 표시
         (예: "관광지 찾는 중...", "동선 계산 중...", "비용 계산 중...")
