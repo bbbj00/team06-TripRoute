@@ -3,6 +3,7 @@
 import uuid
 from typing import Any, Dict
 
+from langfuse import observe
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -54,6 +55,7 @@ def build_trip_route_graph(
 _TRIP_ROUTE_GRAPH = build_trip_route_graph(get_checkpointer())
 
 
+@observe(name="trip_plan_workflow")
 def run_trip_route_workflow(
     user_input: str,
     transport_mode: str = "대중교통",
@@ -74,6 +76,11 @@ def run_trip_route_workflow(
     체크포인터가 켜져 있는데(SUPABASE_DB_URL 설정됨) thread_id를 안 넘기면, 이번 호출
     한 번만을 위한 임의 thread_id를 만들어서 쓴다(LangGraph는 체크포인터가 있으면
     thread_id를 요구하므로) — 다음 턴과 이어지진 않지만 실행 자체는 문제없이 된다.
+
+    @observe()로 이 함수 전체를 감싸서, 안쪽 4개 노드(parse/route_planner/financial/
+    finalize)의 @observe() 스팬과 Solar/임베딩 호출(langfuse.openai)이 전부 "요청 하나 =
+    트레이스 하나"로 같이 묶이게 한다 — 이게 없으면 각 LLM 호출이 서로 무관한 독립
+    트레이스로 따로따로 찍혀서 한 사용자 요청 안에서 어디가 느린지 못 본다.
     """
     config = None
     if get_checkpointer() is not None:

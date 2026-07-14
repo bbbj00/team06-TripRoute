@@ -5,7 +5,12 @@ import os
 import re
 from typing import Any, Dict, List
 
-from openai import OpenAI
+# Langfuse가 openai 클라이언트를 감싸서 제공하는 드롭인 대체품 — 이 클라이언트로 만든
+# 모든 chat.completions.create()/embeddings.create() 호출이 프롬프트/응답/토큰
+# 사용량/지연시간과 함께 자동으로 Langfuse에 기록된다(호출부 코드는 전혀 안 바뀜).
+# LANGFUSE_PUBLIC_KEY/SECRET_KEY가 없으면 Langfuse 쪽이 알아서 tracing을 꺼서
+# 조용히 동작하므로, 이 기능을 아직 설정 안 한 환경에서도 기존과 동일하게 동작한다.
+from langfuse.openai import OpenAI
 
 from app.core.config import settings
 from app.core.prompts import (

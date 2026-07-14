@@ -2,6 +2,8 @@
 
 from typing import Any, Dict, List
 
+from langfuse import observe
+
 from app.agents.financial import build_financial_summary
 from app.agents.route_planner import (
     _parse_travel_days,
@@ -25,6 +27,7 @@ def _trace_entry(step: int, action: str, description: str, **extra: Any) -> Dict
     return entry
 
 
+@observe(name=PARSE_NODE)
 def parse_node(state: TripRouteState) -> Dict[str, Any]:
     """1단계: Solar API(또는 Mock parser)로 사용자 입력을 여행 조건으로 구조화한다."""
     parsed, parse_warnings = parse_trip_request(
@@ -58,6 +61,7 @@ def parse_node(state: TripRouteState) -> Dict[str, Any]:
     }
 
 
+@observe(name=ROUTE_PLANNER_NODE)
 def route_planner_node(state: TripRouteState) -> Dict[str, Any]:
     """
     2단계: Route Planner Agent가 관광지 후보/연관 장소/동선/일정을 만든다.
@@ -181,6 +185,7 @@ def _build_fallback_cost_summary(
     }
 
 
+@observe(name=FINANCIAL_NODE)
 def financial_node(state: TripRouteState) -> Dict[str, Any]:
     """3단계: Financial Agent가 교통비/식비/입장료/숙박비 등 예상 비용을 계산한다."""
     route_plan = {
@@ -224,6 +229,7 @@ def financial_node(state: TripRouteState) -> Dict[str, Any]:
     }
 
 
+@observe(name=FINALIZE_NODE)
 def finalize_node(state: TripRouteState) -> Dict[str, Any]:
     """4단계: 각 Agent 결과를 최종 응답 형태로 조립한다."""
     existing_warnings = list(state.get("warnings", []))
