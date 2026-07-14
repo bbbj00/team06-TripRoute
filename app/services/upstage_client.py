@@ -3,7 +3,7 @@
 import json
 import os
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterator, List
 
 # Langfuse가 openai 클라이언트를 감싸서 제공하는 드롭인 대체품 — 이 클라이언트로 만든
 # 모든 chat.completions.create()/embeddings.create() 호출이 프롬프트/응답/토큰
@@ -16,6 +16,7 @@ from app.core.config import settings
 from app.core.prompts import (
     COORDINATOR_PARSE_SYSTEM_PROMPT,
     FINANCIAL_USEFEE_PARSE_SYSTEM_PROMPT,
+    TRIP_SUMMARY_STREAM_SYSTEM_PROMPT,
 )
 
 
@@ -214,6 +215,71 @@ def chat_completion(
     )
 
     return response.choices[0].message.content or ""
+
+
+def _build_trip_summary_payload(
+    condition_summary: Dict[str, Any],
+    daily_schedule: List[Dict[str, Any]],
+    cost_summary: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    완성된 일정 전체를 그대로 프롬프트에 넣으면 불필요하게 길고(주소/좌표/이미지 URL 등),
+    금액도 다시 언급하지 말라고 프롬프트에서 지시하므로 총액 정도만 대략적인 규모 힌트로
+    남긴다. 일차별로 장소명만 순서대로 뽑아서 가볍게 요약해 넘긴다.
+    """
+    days: Dict[str, List[str]] = {}
+    for entry in daily_schedule:
+        day = entry.get("day", "")
+        days.setdefault(day, []).append(entry.get("place_name") or entry.get("place") or "")
+
+    return {
+        "city": condition_summary.get("city"),
+        "season": condition_summary.get("season"),
+        "duration": condition_summary.get("duration"),
+        "travel_style": condition_summary.get("travel_style", []),
+        "prefer_local": condition_summary.get("prefer_local", False),
+        "prefer_budget": condition_summary.get("prefer_budget", False),
+        "itinerary": [
+            {"day": day, "places": places} for day, places in days.items()
+        ],
+        "total_cost_level": (
+            "저예산" if cost_summary.get("total", 0) < 150000
+            else "중간" if cost_summary.get("total", 0) < 350000
+            else "고예산"
+        ),
+    }
+
+
+def stream_trip_summary(
+    condition_summary: Dict[str, Any],
+    daily_schedule: List[Dict[str, Any]],
+    cost_summary: Dict[str, Any],
+) -> Iterator[str]:
+    """
+    완성된 여행 일정을 자연스러운 대화체 문단으로 요약하는 텍스트를 Solar에 stream=True로
+    요청하고, 생성되는 대로 텍스트 조각(delta)을 하나씩 yield한다. 호출부(Gradio)가 이걸
+    받아서 타이핑 효과로 화면에 이어붙인다.
+
+    실패(네트워크 오류 등)하면 예외가 그대로 올라간다 — 호출부가 문단 하나 전체를 위한
+    고정 문구로 대체할 수 있게, 여기서 대신 침묵하지 않는다.
+    """
+    model = os.getenv("UPSTAGE_MODEL", CHAT_MODEL)
+    payload = _build_trip_summary_payload(condition_summary, daily_schedule, cost_summary)
+
+    stream = _client().chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": TRIP_SUMMARY_STREAM_SYSTEM_PROMPT},
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        ],
+        temperature=0.4,
+        stream=True,
+    )
+
+    for chunk in stream:
+        delta = chunk.choices[0].delta.content
+        if delta:
+            yield delta
 
 
 def embed_query(text: str) -> List[float]:

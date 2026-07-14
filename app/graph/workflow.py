@@ -1,9 +1,9 @@
 # app/graph/workflow.py
 
 import uuid
-from typing import Any, Dict
+from typing import Any, Dict, Iterator, Optional, Tuple
 
-from langfuse import observe
+from langfuse import get_client, observe
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -100,3 +100,62 @@ def run_trip_route_workflow(
     )
 
     return final_state["result"]
+
+
+# 노드 이름 -> 사용자에게 보여줄 진행 상황 메시지. Gradio가 이 문구를 채팅창에 실시간으로
+# 표시해서, 4단계 파이프라인 중 지금 어디쯤인지 사용자가 알 수 있게 한다.
+NODE_PROGRESS_MESSAGES: Dict[str, str] = {
+    PARSE_NODE: "여행 조건을 분석하고 있어요...",
+    ROUTE_PLANNER_NODE: "관광지와 동선을 찾고 있어요...",
+    FINANCIAL_NODE: "예상 비용을 계산하고 있어요...",
+    FINALIZE_NODE: "결과를 정리하고 있어요...",
+}
+
+
+def stream_trip_route_workflow(
+    user_input: str,
+    transport_mode: str = "대중교통",
+    people_count: int = 2,
+    previous_condition_summary: Dict[str, Any] | None = None,
+    previous_result: Dict[str, Any] | None = None,
+    thread_id: str | None = None,
+) -> Iterator[Tuple[str, Optional[Dict[str, Any]]]]:
+    """
+    run_trip_route_workflow와 파라미터는 동일하지만, 그래프를 한 번에 끝까지 돌리는 대신
+    노드가 하나씩 끝날 때마다 (진행 메시지, 결과 or None)을 yield한다 — Gradio가 "관광지
+    찾는 중...", "비용 계산 중..." 같은 단계별 상태를 실시간으로 보여줄 수 있게 하기 위함.
+    마지막 노드(finalize)가 끝났을 때만 두 번째 값이 실제 결과 dict로 채워진다.
+
+    @observe() 데코레이터는 제너레이터 함수에 그대로 쓰면 함수 본문이 실행되기 전에
+    반환값(제너레이터 객체)부터 넘어가버려서 스팬이 너무 일찍 닫힐 수 있다. 대신 Langfuse
+    클라이언트의 컨텍스트 매니저(start_as_current_observation)로 for 루프 전체를 감싸서,
+    제너레이터가 소진될 때까지 스팬이 열려있게 한다 — 그래야 안쪽 4개 노드의 @observe()
+    스팬이 이 스트리밍 실행에도 똑같이 "요청 하나 = 트레이스 하나"로 묶인다.
+    """
+    config = None
+    if get_checkpointer() is not None:
+        config = {"configurable": {"thread_id": thread_id or str(uuid.uuid4())}}
+
+    with get_client().start_as_current_observation(
+        name="trip_plan_workflow_stream", as_type="span"
+    ):
+        for update in _TRIP_ROUTE_GRAPH.stream(
+            {
+                "user_input": user_input,
+                "transport_mode": transport_mode,
+                "people_count": people_count,
+                "previous_condition_summary": previous_condition_summary,
+                "previous_result": previous_result,
+                "warnings": [],
+                "react_trace": [],
+            },
+            config=config,
+            stream_mode="updates",
+        ):
+            for node_name, node_output in update.items():
+                message = NODE_PROGRESS_MESSAGES.get(node_name, "처리하고 있어요...")
+
+                if node_name == FINALIZE_NODE:
+                    yield message, node_output["result"]
+                else:
+                    yield message, None

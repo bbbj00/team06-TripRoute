@@ -18,8 +18,9 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
-from app.agents.react_loop import run_triproute_react_loop  # noqa: E402
+from app.agents.react_loop import stream_triproute_react_loop  # noqa: E402
 from app.services import auth_client, chat_store  # noqa: E402
+from app.services.upstage_client import stream_trip_summary  # noqa: E402
 from app.utils.formatter import (  # noqa: E402
     format_condition_summary,
     format_cost_summary,
@@ -391,7 +392,8 @@ def chat(
 
     history = history + [{"role": "user", "content": normalized_message}]
 
-    # 1) 로딩 상태를 먼저 보여준다
+    # 1) 스트리밍이 시작되기 전(첫 Solar 호출 전)에도 즉시 뭔가 보이도록 초기 로딩 상태를
+    # 먼저 보여준다. 이후엔 단계별 진행 메시지(아래 for 루프)가 이 자리를 계속 갱신한다.
     loading_history = history + [
         {"role": "assistant", "content": LOADING_MESSAGE}
     ]
@@ -416,11 +418,12 @@ def chat(
         except Exception:
             pass
 
-    # 2) 실제 계획 생성
+    # 2) 실제 계획 생성 — 노드가 끝날 때마다 진행 메시지를 받아 채팅 버블을 갱신한다.
     try:
         normalized_people_count = int(people_count)
+        result = None
 
-        result = run_triproute_react_loop(
+        for progress_message, maybe_result in stream_triproute_react_loop(
             user_input=normalized_message,
             transport_mode=transport_mode,
             people_count=normalized_people_count,
@@ -429,30 +432,64 @@ def chat(
             # 로그인 세션의 session_id를 그대로 체크포인트 thread_id로 재사용해서,
             # 같은 대화는 LangGraph 체크포인터에도 같은 단위로 쌓이게 한다.
             thread_id=session_id,
-        )
+        ):
+            progress_history = history + [
+                {"role": "assistant", "content": progress_message}
+            ]
+            yield (
+                progress_history, "", *NO_RESULT_UPDATE,
+                previous_condition, previous_result, active_session_id,
+                access_token_info, auth_state,
+            )
+            if maybe_result is not None:
+                result = maybe_result
 
         result_sections = _build_result_sections(result)
         new_condition = result.get("condition_summary")
 
         parser = new_condition.get("_parser", "unknown") if new_condition else "unknown"
         parser_name = PARSER_LABELS.get(parser, parser)
-        
+
         city = new_condition.get("city", "알 수 없는 지역") if new_condition else "알 수 없는 지역"
         themes = new_condition.get("travel_style", []) if new_condition else []
         theme_str = ", ".join(themes) if themes else "일반"
         duration = new_condition.get("duration", "알 수 없는 기간") if new_condition else "알 수 없는 기간"
 
-        reply = (
+        header = (
             "요청하신 여행 계획 생성이 완료되었습니다! ✨<br><br>"
             f"✅ <b>장소:</b> {city}<br>"
             f"✅ <b>기간:</b> {duration}<br>"
             f"✅ <b>인원:</b> {normalized_people_count}명<br>"
             f"✅ <b>이동수단:</b> {transport_mode}<br>"
             f"✅ <b>테마:</b> {theme_str}<br><br>"
-            "위 조건으로 일정, 동선, 비용을 최적화했습니다. "
-            "아래 <b>결과 패널</b>에서 상세 내용을 확인해 주세요!"
         )
 
+        # 3) 자연어 설명 문단만 Solar stream=True로 타이핑 효과를 내며 이어붙인다.
+        # daily_schedule/cost_summary 같은 계산된 수치 데이터는 이미 위에서 확정된
+        # result_sections로 한 번에 표시되고, 스트리밍 대상이 아니다.
+        streamed_text = ""
+        try:
+            for delta in stream_trip_summary(
+                new_condition, result["daily_schedule"], result["cost_summary"]
+            ):
+                streamed_text += delta
+                partial_history = history + [
+                    {"role": "assistant", "content": header + streamed_text}
+                ]
+                yield (
+                    partial_history, "", *result_sections,
+                    new_condition, result, session_id,
+                    access_token_info, auth_state,
+                )
+        except Exception:
+            # 설명 문장 생성 실패는 계획 자체의 실패가 아니므로, 고정 문구로 대체하고
+            # 계속 진행한다(결과 패널은 이미 정상적으로 채워져 있음).
+            streamed_text = (
+                "위 조건으로 일정, 동선, 비용을 최적화했습니다. "
+                "아래 <b>결과 패널</b>에서 상세 내용을 확인해 주세요!"
+            )
+
+        reply = header + streamed_text
         final_history = history + [{"role": "assistant", "content": reply}]
 
         if is_logged_in and session_id is not None:
