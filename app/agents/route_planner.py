@@ -211,6 +211,7 @@ def _build_place_reason(
     rating: Any,
     review_count: Any,
     travel_style: List[str],
+    prefer_local: bool = False,
 ) -> str:
     """
     장소의 카테고리·평점·리뷰수를 반영해 추천 이유를 장소별로 다르게 만든다.
@@ -219,13 +220,22 @@ def _build_place_reason(
     숙박/음식점은 "OO 취향에 잘 맞습니다"라고 하면 사용자가 말한 취향과 억지로
     끼워맞춘 것처럼 읽혀서, 대신 평점·리뷰수만으로 그 장소가 어떤 곳인지 자연스럽게
     설명한다(예: "리뷰 686개, 평점 4.2의 맛집입니다", "편하게 쉬기 좋은 숙소입니다").
+
+    prefer_local(로컬/한적한 곳 선호)이 켜져 있고 이 장소가 숨은 맛집 기준(평점
+    HIDDEN_GEM_MIN_RATING 이상)을 만족하면, 리뷰수가 POPULAR_REVIEW_COUNT_THRESHOLD를
+    넘더라도 "인기"를 붙이지 않는다 — prefer_local로 선택된 장소를 "인기 맛집"이라고
+    설명하면 선택 이유와 문구가 서로 모순되기 때문이다.
     """
     category_text = category or "관광지"
     style_text = ", ".join(travel_style) if travel_style else "여행"
     signal = _format_place_signal(rating, review_count)
 
     review_count_value = review_count if isinstance(review_count, (int, float)) else 0
-    popularity_prefix = "인기 " if review_count_value >= POPULAR_REVIEW_COUNT_THRESHOLD else ""
+    rating_value = _to_float(rating)
+    is_hidden_gem = prefer_local and rating_value is not None and rating_value >= HIDDEN_GEM_MIN_RATING
+    popularity_prefix = (
+        "인기 " if review_count_value >= POPULAR_REVIEW_COUNT_THRESHOLD and not is_hidden_gem else ""
+    )
 
     if category == RESTAURANT_CATEGORY:
         return f"{signal}{popularity_prefix}맛집입니다."
@@ -282,7 +292,9 @@ def _build_taste_text(travel_style: List[str], prefer_local: bool) -> str:
     return f"{style_text}을(를) 좋아하는 여행"
 
 
-def _normalize_rag_place(item: Dict[str, Any], travel_style: List[str]) -> Place:
+def _normalize_rag_place(
+    item: Dict[str, Any], travel_style: List[str], prefer_local: bool = False
+) -> Place:
     """
     match_places RPC 결과(Supabase places 테이블 행)를 Route Planner 내부 형식으로 변환한다.
 
@@ -304,7 +316,7 @@ def _normalize_rag_place(item: Dict[str, Any], travel_style: List[str]) -> Place
         "area_code": None,
         "signgu_code": None,
         "image_url": "",
-        "reason": _build_place_reason(category, rating, review_count, travel_style),
+        "reason": _build_place_reason(category, rating, review_count, travel_style, prefer_local),
         "source": "rag",
         "rating": rating,
         "review_count": review_count,
@@ -459,7 +471,7 @@ def _search_rag_places(
         return []
 
     places = _deduplicate_places(
-        [_normalize_rag_place(item, travel_style) for item in results]
+        [_normalize_rag_place(item, travel_style, prefer_local) for item in results]
     )
     # 숙박은 일반 관광지 취향 유사도로 뽑히면 안 된다 — _search_lodging_place가 따로
     # 하나만 골라서 체크인 시점에 넣으므로, 여기 섞여 들어오면 호텔이 오전/오후 같은
@@ -607,6 +619,15 @@ def _search_lodging_place(
     if not lodging_places:
         return None
 
+    # 이름 키워드로만 숙박 판정된 곳(원본 category가 "레포츠" 등)은 _normalize_rag_place가
+    # 원본 category 기준으로 reason을 만들어서 "레포츠인 곳" 같은 문구가 남아있다 —
+    # 여기서부터는 숙박으로 확정됐으니 reason도 숙박 문구로 다시 만든다.
+    for place in lodging_places:
+        if place.get("category") != LODGING_CATEGORY:
+            place["reason"] = _build_place_reason(
+                LODGING_CATEGORY, place.get("rating"), place.get("review_count"), travel_style or []
+            )
+
     lodging_places = _fill_missing_place_details(lodging_places)
     lodging_places = _filter_places_within_radius(
         lodging_places,
@@ -685,7 +706,7 @@ def _search_restaurant_places(
 
     restaurant_places = _deduplicate_places(
         [
-            _normalize_rag_place(item, travel_style)
+            _normalize_rag_place(item, travel_style, prefer_local)
             for item in results
             if item.get("category") == RESTAURANT_CATEGORY
         ]
@@ -1210,15 +1231,22 @@ def _build_lodging_schedule_entry(
 
 def _insert_lodging_checkin(
     schedule: List[Dict[str, Any]],
+    route_summary: List[RouteSegment],
     lodging_place: Place | None,
-) -> List[Dict[str, Any]]:
+    transport_mode: str,
+) -> Tuple[List[Dict[str, Any]], List[RouteSegment]]:
     """
     1일차 점심 슬롯 바로 뒤(보통 체크인 가능 시간인 오후 2시경)에 숙박 체크인
     일정을 한 번만 끼워 넣는다. 1일차에 점심 슬롯이 없으면(일정이 짧거나 슬롯이
     부족한 경우) 1일차의 마지막 일정 뒤에 넣는다.
+
+    route_summary[i]는 schedule[i] -> schedule[i+1] 구간이라는 불변식을 후속 요청
+    (슬롯 교체/장소 이동)이 그대로 의존하므로, schedule에 체크인 엔트리를 끼워 넣을
+    때 route_summary도 같이 갱신한다 — 기존에 이 구간을 그대로 두면 체크인 지점
+    이후 인덱스가 전부 하나씩 어긋나서 후속 요청이 엉뚱한 구간을 덮어쓰게 된다.
     """
     if not lodging_place:
-        return schedule
+        return schedule, route_summary
 
     insert_index = None
     for index, entry in enumerate(schedule):
@@ -1232,8 +1260,29 @@ def _insert_lodging_checkin(
 
     previous_place_name = schedule[insert_index - 1]["place_name"] if insert_index > 0 else ""
     checkin_entry = _build_lodging_schedule_entry(lodging_place, previous_place_name)
+    checkin_place = _place_from_schedule_entry(checkin_entry)
 
-    return schedule[:insert_index] + [checkin_entry] + schedule[insert_index:]
+    new_schedule = schedule[:insert_index] + [checkin_entry] + schedule[insert_index:]
+
+    new_segments: List[RouteSegment] = []
+    if insert_index > 0:
+        prev_place = _place_from_schedule_entry(schedule[insert_index - 1])
+        routes, _ = _build_real_routes(
+            selected_places=[prev_place, checkin_place], transport_mode=transport_mode
+        )
+        new_segments.extend(routes)
+    if insert_index < len(schedule):
+        next_place = _place_from_schedule_entry(schedule[insert_index])
+        routes, _ = _build_real_routes(
+            selected_places=[checkin_place, next_place], transport_mode=transport_mode
+        )
+        new_segments.extend(routes)
+
+    prefix = route_summary[: insert_index - 1] if insert_index > 0 else []
+    suffix = route_summary[insert_index:]
+    new_route_summary = list(prefix) + new_segments + list(suffix)
+
+    return new_schedule, new_route_summary
 
 
 # 하루 이동시간 합이 이 기준(분)을 넘으면 과밀 경고를 남긴다. "여유로운 일정"을 골랐는데
@@ -1660,6 +1709,15 @@ def build_route_plan(
         )
     )
     related_places = _fill_missing_place_details(related_places)
+    # 코스 하위 장소는 category가 매칭 전엔 None이라 여기서 채워지기 전까진 걸러낼 수
+    # 없었다 — _search_rag_places/_search_real_places와 동일하게, 채워진 category가
+    # 숙박/음식점인 곳은 일반 관광지 슬롯에 들어가면 안 되므로 제외한다.
+    related_places = [
+        place for place in related_places
+        if place.get("category") != LODGING_CATEGORY
+        and place.get("category") != RESTAURANT_CATEGORY
+        and not _is_lodging_by_name(_get_place_name(place))
+    ]
     # 코스에서 붙는 연관 장소도 후보 군집(candidate_places)과 동떨어지지 않게 거리 필터를 통과시킨다
     related_places = _filter_places_within_radius(
         related_places,
@@ -1735,7 +1793,9 @@ def build_route_plan(
         if travel_days > 1
         else None
     )
-    daily_schedule = _insert_lodging_checkin(daily_schedule, lodging_place)
+    daily_schedule, route_summary = _insert_lodging_checkin(
+        daily_schedule, route_summary, lodging_place, transport_mode
+    )
 
     return {
         "tourist_spots": candidate_places,
@@ -2283,6 +2343,10 @@ def build_place_move_route_plan(
         if i not in (source_index, destination_index)
     ]
     existing_keys = {_normalized_place_key(entry.get("place_name") or "") for entry in other_entries}
+    # moving_place 자신은 이제 destination 자리로 옮겨가므로, source 빈 자리를 채울
+    # 백필 후보로 자기 자신이 재선택되지 않게 제외한다(그렇지 않으면 취향 유사도
+    # 1순위였던 곳이 두 슬롯에 중복으로 배정될 수 있다).
+    existing_keys.add(_normalized_place_key(_get_place_name(moving_place)))
     anchor_places = [
         entry
         for entry in other_entries

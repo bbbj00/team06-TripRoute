@@ -79,6 +79,9 @@ def estimate_rental_car_cost(people_count: int, travel_days: int) -> dict:
     }
 
 
+TAXI_SEATS_PER_CAB = 4
+
+
 def estimate_transport_cost(
     transport_mode: str,
     distance_km: float,
@@ -92,10 +95,22 @@ def estimate_transport_cost(
     """
 
     if transport_mode == "택시":
+        # 경로 조회 실패 시 taxi_fare가 0으로 채워지므로(route_planner._unavailable_route),
+        # 0 이하는 실제 무료 요금이 아니라 데이터 누락으로 간주한다
+        # (cost_rules.to_positive_int와 동일한 규칙).
+        if taxi_fare is None or taxi_fare <= 0:
+            return {
+                "transport_mode": transport_mode,
+                "estimated_time_minutes": car_minutes,
+                "estimated_cost": 0,
+                "is_estimated": True,
+            }
+
+        cabs_needed = math.ceil(people_count / TAXI_SEATS_PER_CAB)
         return {
             "transport_mode": transport_mode,
             "estimated_time_minutes": car_minutes,
-            "estimated_cost": taxi_fare or 0,
+            "estimated_cost": taxi_fare * cabs_needed,
             "is_estimated": False,
         }
 

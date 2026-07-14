@@ -5,8 +5,9 @@ import tempfile
 import threading
 import time
 from collections import defaultdict
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Iterator, Optional
 
 CACHE_DIR = Path("data/cache")
 DEFAULT_TTL_SECONDS = 60 * 60 * 24  # 카카오/TourAPI 응답은 하루 정도면 충분히 안정적이라 24시간으로 둠
@@ -14,13 +15,29 @@ DEFAULT_TTL_SECONDS = 60 * 60 * 24  # 카카오/TourAPI 응답은 하루 정도�
 # 캐시 파일 경로별 락. ThreadPoolExecutor로 병렬 조회하는 호출자(route_planner의
 # _fill_missing_place_details 등)가 동일한 캐시 파일에 동시에 읽고/쓰는 것을 막기 위함
 # (같은 content_id를 가리키는 서로 다른 place 항목이 있을 수 있어 파일 경합이 발생함).
+# RLock인 이유: cached_call이 check-then-fetch-then-store 구간 전체를 하나의 락으로 감싸면서
+# 그 안에서 _get_cached_raw/set_cached가 같은 경로에 대해 다시 락을 얻으므로(같은 스레드) 재진입이 필요함.
+# 참조 카운트로 관리해서 더 이상 대기자가 없는 경로의 락은 즉시 dict에서 제거하고,
+# 그렇지 않으면 프로세스 수명 동안 조회된 모든 (namespace, params) 조합이 영원히 쌓이게 된다.
 _locks_guard = threading.Lock()
-_path_locks: Dict[Path, threading.Lock] = defaultdict(threading.Lock)
+_path_locks: Dict[Path, threading.RLock] = {}
+_path_lock_waiters: Dict[Path, int] = defaultdict(int)
 
 
-def _lock_for(path: Path) -> threading.Lock:
+@contextmanager
+def _lock_for(path: Path) -> Iterator[None]:
     with _locks_guard:
-        return _path_locks[path]
+        lock = _path_locks.setdefault(path, threading.RLock())
+        _path_lock_waiters[path] += 1
+    try:
+        with lock:
+            yield
+    finally:
+        with _locks_guard:
+            _path_lock_waiters[path] -= 1
+            if _path_lock_waiters[path] <= 0:
+                _path_lock_waiters.pop(path, None)
+                _path_locks.pop(path, None)
 
 
 def _cache_path(namespace: str, params: Dict[str, Any]) -> Path:
@@ -58,13 +75,11 @@ def _get_cached_raw(namespace: str, params: Dict[str, Any], ttl_seconds: int) ->
         try:
             with open(path, encoding="utf-8") as f:
                 cached = json.load(f)
+            if time.time() - cached["cached_at"] > ttl_seconds:
+                return _MISSING
+            return cached["data"]
         except (json.JSONDecodeError, OSError, KeyError):
             return _MISSING
-
-        if time.time() - cached["cached_at"] > ttl_seconds:
-            return _MISSING
-
-        return cached["data"]
 
 
 def set_cached(namespace: str, params: Dict[str, Any], data: Any) -> None:
@@ -104,10 +119,12 @@ def cached_call(
     캐시 히트로 처리되어 TTL 내에는 fetch_fn이 다시 호출되지 않는다.
     """
 
-    cached = _get_cached_raw(namespace, params, ttl_seconds)
-    if cached is not _MISSING:
-        return cached
+    path = _cache_path(namespace, params)
+    with _lock_for(path):
+        cached = _get_cached_raw(namespace, params, ttl_seconds)
+        if cached is not _MISSING:
+            return cached
 
-    data = fetch_fn()
-    set_cached(namespace, params, data)
-    return data
+        data = fetch_fn()
+        set_cached(namespace, params, data)
+        return data

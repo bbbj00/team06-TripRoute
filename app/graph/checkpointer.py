@@ -45,9 +45,20 @@ def get_checkpointer() -> Optional[BaseCheckpointSaver]:
         return None
 
     if _checkpointer is None:
-        from psycopg_pool import ConnectionPool
+        try:
+            from psycopg_pool import ConnectionPool
 
-        from langgraph.checkpoint.postgres import PostgresSaver
+            from langgraph.checkpoint.postgres import PostgresSaver
+        except ImportError as e:
+            # psycopg_pool/langgraph-checkpoint-postgres가 설치 안 된 환경(예: 슬림 Docker
+            # 이미지)에서도 이 모듈을 import하는 순간 앱 전체가 죽지 않도록, 위 setup 실패
+            # 케이스와 동일하게 경고만 남기고 체크포인트 없이 동작하게 한다.
+            print(
+                f"[경고] LangGraph 체크포인터 관련 패키지 import 실패, "
+                f"체크포인트 없이 실행합니다: {e}"
+            )
+            _connection_failed = True
+            return None
 
         checkpointer = None
         last_error: Exception | None = None

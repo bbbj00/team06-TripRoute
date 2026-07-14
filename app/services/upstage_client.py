@@ -508,11 +508,25 @@ def _extract_json(text: str) -> dict[str, Any]:
 
     while start != -1:
         depth = 0
+        in_string = False
+        escaped = False
 
         for index in range(start, len(text)):
             char = text[index]
 
-            if char == "{":
+            # 문자열 리터럴 안의 '{'/'}'는 구조적 중괄호가 아니므로 깊이 계산에서 제외한다.
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+
+            if char == '"':
+                in_string = True
+            elif char == "{":
                 depth += 1
             elif char == "}":
                 depth -= 1

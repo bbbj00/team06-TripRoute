@@ -77,14 +77,25 @@ def run_trip_route_workflow(
     한 번만을 위한 임의 thread_id를 만들어서 쓴다(LangGraph는 체크포인터가 있으면
     thread_id를 요구하므로) — 다음 턴과 이어지진 않지만 실행 자체는 문제없이 된다.
 
+    같은 thread_id로 다음 턴을 이어서 호출할 때(대화 세션이 이어지는 경우) warnings/
+    react_trace는 operator.add로 누적되는 채널이라, 새 호출에 빈 리스트를 넣어도
+    체크포인터에 저장된 이전 턴 값 뒤에 이어 붙을 뿐 리셋되지 않는다. 이 함수는 매
+    호출이 "새 턴"이고(재개용 invoke(None, ...) 호출은 코드베이스 어디서도 쓰지 않음)
+    turn 간 이어받을 상태는 previous_condition_summary/previous_result로 호출자가
+    직접 넘겨주므로, 매번 실행 전에 해당 thread의 체크포인트를 지워서 이번 턴이 항상
+    빈 상태에서 시작하게 한다.
+
     @observe()로 이 함수 전체를 감싸서, 안쪽 4개 노드(parse/route_planner/financial/
     finalize)의 @observe() 스팬과 Solar/임베딩 호출(langfuse.openai)이 전부 "요청 하나 =
     트레이스 하나"로 같이 묶이게 한다 — 이게 없으면 각 LLM 호출이 서로 무관한 독립
     트레이스로 따로따로 찍혀서 한 사용자 요청 안에서 어디가 느린지 못 본다.
     """
     config = None
-    if get_checkpointer() is not None:
-        config = {"configurable": {"thread_id": thread_id or str(uuid.uuid4())}}
+    checkpointer = get_checkpointer()
+    if checkpointer is not None:
+        actual_thread_id = thread_id or str(uuid.uuid4())
+        checkpointer.delete_thread(actual_thread_id)
+        config = {"configurable": {"thread_id": actual_thread_id}}
 
     final_state = _TRIP_ROUTE_GRAPH.invoke(
         {
@@ -131,10 +142,17 @@ def stream_trip_route_workflow(
     클라이언트의 컨텍스트 매니저(start_as_current_observation)로 for 루프 전체를 감싸서,
     제너레이터가 소진될 때까지 스팬이 열려있게 한다 — 그래야 안쪽 4개 노드의 @observe()
     스팬이 이 스트리밍 실행에도 똑같이 "요청 하나 = 트레이스 하나"로 묶인다.
+
+    run_trip_route_workflow와 마찬가지로, 같은 thread_id로 다음 턴이 이어질 때
+    warnings/react_trace가 이전 턴 값에 누적되지 않도록 실행 전에 해당 thread의
+    체크포인트를 지운다.
     """
     config = None
-    if get_checkpointer() is not None:
-        config = {"configurable": {"thread_id": thread_id or str(uuid.uuid4())}}
+    checkpointer = get_checkpointer()
+    if checkpointer is not None:
+        actual_thread_id = thread_id or str(uuid.uuid4())
+        checkpointer.delete_thread(actual_thread_id)
+        config = {"configurable": {"thread_id": actual_thread_id}}
 
     with get_client().start_as_current_observation(
         name="trip_plan_workflow_stream", as_type="span"

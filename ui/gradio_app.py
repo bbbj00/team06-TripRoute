@@ -298,7 +298,7 @@ def do_logout(access_token_info, auth_state):
         "",
         None,
         None,
-        "",
+        None,
     )
 
 
@@ -428,7 +428,9 @@ def chat(
                     sessions,
                     gr.update(visible=False),
                 )
-            chat_store.append_message(session_id, "user", normalized_message)
+            chat_store.append_message(
+                session_id, access_token_info["user_id"], "user", normalized_message
+            )
         except Exception:
             pass
 
@@ -468,11 +470,11 @@ def chat(
 
         header = (
             "요청하신 여행 계획 생성이 완료되었습니다! ✨<br><br>"
-            f"✅ <b>장소:</b> {city}<br>"
-            f"✅ <b>기간:</b> {duration}<br>"
+            f"✅ <b>장소:</b> {html.escape(city)}<br>"
+            f"✅ <b>기간:</b> {html.escape(duration)}<br>"
             f"✅ <b>인원:</b> {normalized_people_count}명<br>"
             f"✅ <b>이동수단:</b> {transport_mode}<br>"
-            f"✅ <b>테마:</b> {theme_str}<br><br>"
+            f"✅ <b>테마:</b> {html.escape(theme_str)}<br><br>"
         )
 
         # 3) 자연어 설명 문단만 Solar stream=True로 타이핑 효과를 내며 이어붙인다.
@@ -515,16 +517,26 @@ def chat(
 
         if is_logged_in and session_id is not None:
             try:
-                chat_store.append_message(session_id, "assistant", reply)
-                chat_store.update_session_condition_summary(session_id, new_condition)
+                chat_store.append_message(
+                    session_id, access_token_info["user_id"], "assistant", reply
+                )
+                chat_store.update_session_condition_summary(
+                    session_id, access_token_info["user_id"], new_condition
+                )
                 # 결과 패널(일정/동선/비용)도 통째로 저장해둔다 — "최근 대화"에서 이
                 # 세션을 다시 열었을 때 대화 내용뿐 아니라 그때 만든 일정도 같이 복원됨.
-                chat_store.update_session_result(session_id, result)
+                chat_store.update_session_result(
+                    session_id, access_token_info["user_id"], result
+                )
                 if is_first_message_in_session:
                     # 첫 메시지 그대로 자르는 대신(또는 "새 대화" 버튼으로 미리 만들어져
                     # 제목이 아예 없는 세션이든) 도시·기간으로 요약된 제목을 붙인다 —
                     # "최근 대화" 목록에서 어떤 여행인지 한눈에 알 수 있게.
-                    chat_store.update_session_title(session_id, f"{city} {duration} 여행")
+                    chat_store.update_session_title(
+                        session_id,
+                        access_token_info["user_id"],
+                        f"{city} {duration} 여행",
+                    )
                     # 사이드바에 이미 임시 제목(또는 "새 대화")으로 보이던 항목을
                     # 최종 제목으로 다시 갱신한다.
                     sessions = chat_store.list_recent_sessions(access_token_info["user_id"])

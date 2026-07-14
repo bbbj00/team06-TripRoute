@@ -2,6 +2,8 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
+from app.schemas.response import TripPlanResponse
+
 
 class TripPlanRequest(BaseModel):
     """
@@ -10,6 +12,8 @@ class TripPlanRequest(BaseModel):
 
     user_input: str = Field(
         ...,
+        min_length=1,
+        max_length=2000,
         description="사용자의 자연어 여행 요청",
         examples=[
             "강릉으로 1박 2일 여행 가고 싶어. 바다랑 감성 카페, 먹거리를 좋아해."
@@ -35,12 +39,12 @@ class TripPlanRequest(BaseModel):
         ),
     )
 
-    previous_result: Optional[dict[str, Any]] = Field(
+    previous_result: Optional[TripPlanResponse] = Field(
         default=None,
         description=(
-            "직전 턴의 전체 결과(daily_schedule/route_summary 포함). 함께 넘기면 "
-            "기간 연장 후속 요청(예: '3일로 늘려줘')에서 기존 일정을 유지한 채 "
-            "늘어난 날짜만 새로 채운다."
+            "직전 턴의 전체 결과(daily_schedule/route_summary 포함). previous_condition_summary와 "
+            "함께 넘겨야 기간 연장 후속 요청(예: '3일로 늘려줘')에서 기존 일정을 유지한 채 "
+            "늘어난 날짜만 새로 채운다. previous_condition_summary 없이 이것만 넘기면 전체 재계획으로 처리된다."
         ),
     )
 

@@ -153,12 +153,25 @@ def test_append_message_also_bumps_session_updated_at(monkeypatch):
         tables={"chat_sessions": [{"id": "s1", "user_id": "owner", "updated_at": "old"}]},
     )
 
-    chat_store.append_message("s1", "user", "안녕")
+    chat_store.append_message("s1", "owner", "user", "안녕")
 
     ops = [(entry["table"], entry["op"]) for entry in recorder]
     assert ("chat_messages", "insert") in ops
     assert ("chat_sessions", "update") in ops
     assert tables["chat_sessions"][0]["updated_at"] != "old"
+
+
+def test_append_message_rejects_other_users_session(monkeypatch):
+    tables, _ = _install_fake_client(
+        monkeypatch,
+        tables={"chat_sessions": [{"id": "s1", "user_id": "owner"}]},
+    )
+
+    try:
+        chat_store.append_message("s1", "someone-else", "user", "안녕")
+        assert False, "should have raised PermissionError"
+    except PermissionError:
+        pass
 
 
 def test_update_session_condition_summary(monkeypatch):
@@ -167,6 +180,6 @@ def test_update_session_condition_summary(monkeypatch):
         tables={"chat_sessions": [{"id": "s1", "user_id": "owner"}]},
     )
 
-    chat_store.update_session_condition_summary("s1", {"city": "강릉"})
+    chat_store.update_session_condition_summary("s1", "owner", {"city": "강릉"})
 
     assert tables["chat_sessions"][0]["last_condition_summary"] == {"city": "강릉"}

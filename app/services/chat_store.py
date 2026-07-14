@@ -70,8 +70,13 @@ def get_session_messages(session_id: str, user_id: str) -> List[Dict[str, Any]]:
     return response.data
 
 
-def append_message(session_id: str, role: str, content: str) -> Dict[str, Any]:
+def append_message(
+    session_id: str, user_id: str, role: str, content: str
+) -> Dict[str, Any]:
     """세션에 메시지를 하나 추가하고, 세션의 updated_at도 같이 갱신한다."""
+    if not _session_belongs_to_user(session_id, user_id):
+        raise PermissionError("session_id does not belong to user_id")
+
     row = {"session_id": session_id, "role": role, "content": content}
     response = get_client().table("chat_messages").insert(row).execute()
 
@@ -84,12 +89,16 @@ def append_message(session_id: str, role: str, content: str) -> Dict[str, Any]:
 
 def update_session_condition_summary(
     session_id: str,
+    user_id: str,
     condition_summary: Dict[str, Any],
 ) -> Dict[str, Any]:
     """
     세션에 마지막 condition_summary를 저장한다 — 나중에 이 세션을 다시 열었을 때
     맥락 이어가기(previous_condition_summary)의 출발점이 된다.
     """
+    if not _session_belongs_to_user(session_id, user_id):
+        raise PermissionError("session_id does not belong to user_id")
+
     response = (
         get_client()
         .table("chat_sessions")
@@ -105,8 +114,11 @@ def update_session_condition_summary(
     return response.data[0]
 
 
-def update_session_title(session_id: str, title: str) -> Dict[str, Any]:
+def update_session_title(session_id: str, user_id: str, title: str) -> Dict[str, Any]:
     """세션 제목을 갱신한다(보통 첫 사용자 메시지를 잘라서 제목으로 씀)."""
+    if not _session_belongs_to_user(session_id, user_id):
+        raise PermissionError("session_id does not belong to user_id")
+
     response = (
         get_client()
         .table("chat_sessions")
@@ -117,13 +129,18 @@ def update_session_title(session_id: str, title: str) -> Dict[str, Any]:
     return response.data[0]
 
 
-def update_session_result(session_id: str, result: Dict[str, Any]) -> Dict[str, Any]:
+def update_session_result(
+    session_id: str, user_id: str, result: Dict[str, Any]
+) -> Dict[str, Any]:
     """
     세션에 마지막으로 생성된 여행 계획 전체(daily_schedule/route_summary/cost_summary 등)를
     저장한다. "최근 대화" 목록에서 세션을 다시 열었을 때 결과 패널(일정/동선/비용)을
     다시 채워주기 위한 용도 — last_condition_summary만으로는 그 결과물 자체를 복원할
     수 없어서 별도 컬럼에 통째로 저장한다.
     """
+    if not _session_belongs_to_user(session_id, user_id):
+        raise PermissionError("session_id does not belong to user_id")
+
     response = (
         get_client()
         .table("chat_sessions")
