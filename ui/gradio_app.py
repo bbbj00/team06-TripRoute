@@ -25,9 +25,7 @@ from app.utils.formatter import (  # noqa: E402
     format_condition_summary,
     format_cost_summary,
     format_daily_schedule,
-    format_react_trace,
     format_route_summary,
-    format_warnings,
 )
 
 
@@ -55,11 +53,6 @@ RESULT_PLACEHOLDER = (
     "아직 생성된 여행 계획이 없습니다.\n\n"
     "왼쪽에서 여행 요청을 입력하고 **여행 계획 생성**을 눌러주세요."
 )
-
-PARSER_LABELS = {
-    "solar": "Solar API",
-    "mock": "Mock fallback",
-}
 
 LOGIN_ERROR_MESSAGE = "이메일 또는 비밀번호를 확인해주세요."
 SIGNUP_PENDING_MESSAGE = (
@@ -446,9 +439,6 @@ def chat(
 
         result_sections = _build_result_sections(result)
         new_condition = result.get("condition_summary")
-
-        parser = new_condition.get("_parser", "unknown") if new_condition else "unknown"
-        parser_name = PARSER_LABELS.get(parser, parser)
 
         city = new_condition.get("city", "알 수 없는 지역") if new_condition else "알 수 없는 지역"
         themes = new_condition.get("travel_style", []) if new_condition else []

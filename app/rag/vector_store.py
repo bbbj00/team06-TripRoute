@@ -387,7 +387,7 @@ def backfill_coordinates() -> Dict[str, int]:
                 if coords["latitude"] is not None and coords["longitude"] is not None:
                     latitude = coords["latitude"]
                     longitude = coords["longitude"]
-            except Exception as e:
+            except Exception:
                 pass
 
         if latitude is None or longitude is None:

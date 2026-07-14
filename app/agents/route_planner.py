@@ -1401,7 +1401,6 @@ def build_route_plan(
     def _filter_with_must_include(candidates: List[Place], must_includes: List[Place]) -> List[Place]:
         filtered = _filter_places_within_radius(candidates)
         # filtered에 필수 장소가 빠졌다면 다시 강제 추가
-        must_names = {m["name"] for m in must_includes}
         filtered_names = {f["name"] for f in filtered}
         
         for m in must_includes:
