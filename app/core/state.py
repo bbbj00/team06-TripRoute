@@ -37,6 +37,14 @@ class TripRouteState(TypedDict, total=False):
     # "2일차 점심만 바꿔줘" 같은 슬롯 교체 후속 요청에서만 채워짐(없으면 None)
     target_day: Optional[int]
     target_time_slot: Optional[str]
+    # "2일차 관광지를 1일차로 옮겨줘" 같은 장소 이동/맞바꾸기 후속 요청에서만 채워짐
+    move_source_day: Optional[int]
+    move_source_time_slot: Optional[str]
+    move_destination_day: Optional[int]
+    move_destination_time_slot: Optional[str]
+    # "1일차는 바다/카페, 2일차는 액티비티" 처럼 처음 계획할 때만 지원되는 일차별 취향/
+    # 일정 강도 오버라이드. 언급 안 된 날짜는 여기 없고, 그런 날짜는 전체 공통값을 따른다.
+    daily_preferences: List[Dict[str, Any]]
 
     # Route Planner 결과 (build_route_plan)
     candidate_places: List[Dict[str, Any]]

@@ -185,6 +185,106 @@ def _normalize_target_time_slot(value: Any) -> str | None:
     return None
 
 
+def _normalize_movable_time_slot(value: Any) -> str | None:
+    if isinstance(value, str) and value in MOVABLE_TIME_SLOTS:
+        return value
+    return None
+
+
+# 장소 이동("2일차 관광지를 1일차로 옮겨줘") 요청에서는 체크인(숙박) 슬롯은 대상이 아니다.
+MOVABLE_TIME_SLOTS = VALID_TIME_SLOTS - {"체크인"}
+
+_DAY_MENTION_PATTERN = re.compile(r"(\d+)\s*일\s*[차째]|[Dd]ay\s*(\d+)")
+
+
+def _find_day_mentions(user_input: str) -> list[tuple[int, int]]:
+    """문장에 나오는 "N일차"/"Day N" 표현을 등장 순서대로 (day, 문자열 위치) 목록으로 뽑는다."""
+    mentions: list[tuple[int, int]] = []
+    for match in _DAY_MENTION_PATTERN.finditer(user_input):
+        day_str = match.group(1) or match.group(2)
+        mentions.append((int(day_str), match.start()))
+    return mentions
+
+
+def _time_slot_near(user_input: str, position: int, window: int = 12) -> str | None:
+    """position 주변(앞 3자~뒤 window자)에서 이동 가능한 시간대 키워드를 찾는다."""
+    snippet = user_input[max(0, position - 3) : position + window]
+    for slot in MOVABLE_TIME_SLOTS:
+        if slot in snippet:
+            return slot
+    return None
+
+
+def _detect_move_request(
+    user_input: str,
+) -> tuple[int | None, str | None, int | None, str | None]:
+    """
+    "2일차 관광지를 1일차로 옮겨줘", "1일차 오후랑 2일차 오전 바꿔줘"처럼 이미 일정에
+    있는 장소를 다른 날로 옮기거나 맞바꾸는 요청을 감지한다. 서로 다른 일차가 정확히
+    2번 언급됐을 때만 (source_day, source_slot, destination_day, destination_slot)을
+    채우고, 그 외(일차가 1개뿐이거나 3개 이상 언급됨)에는 전부 None을 반환해서 슬롯
+    교체/기간 연장 등 다른 요청과 헷갈리지 않게 한다.
+    """
+    mentions = _find_day_mentions(user_input)
+    distinct_days: list[tuple[int, int]] = []
+    seen_days: set[int] = set()
+    for day, position in mentions:
+        if day not in seen_days:
+            distinct_days.append((day, position))
+            seen_days.add(day)
+
+    if len(distinct_days) != 2:
+        return None, None, None, None
+
+    (source_day, source_pos), (destination_day, destination_pos) = distinct_days
+    source_slot = _time_slot_near(user_input, source_pos)
+    destination_slot = _time_slot_near(user_input, destination_pos)
+
+    return source_day, source_slot, destination_day, destination_slot
+
+
+def _normalize_daily_preferences(value: Any) -> list[dict[str, Any]]:
+    """
+    Solar가 뽑아낸 daily_preferences(일차별 취향/일정 강도)를 검증하고 정규화한다.
+    day가 없거나 양의 정수가 아닌 항목, day가 중복된 항목(뒤에 나온 것 우선)은 버려서
+    route_planner가 이상한 값으로 검색하지 않게 한다. Mock parser는 이 구조를 규칙
+    기반으로 뽑아내기 사실상 불가능하므로 항상 빈 리스트를 반환해 전체 공통 조건으로
+    자연스럽게 대체되게 한다(parse_user_input_mock 참고).
+    """
+    if not isinstance(value, list):
+        return []
+
+    by_day: dict[int, dict[str, Any]] = {}
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+
+        day = _normalize_target_day(item.get("day"))
+        if day is None:
+            continue
+
+        travel_style = item.get("travel_style")
+        if isinstance(travel_style, str):
+            travel_style = [travel_style]
+        if not isinstance(travel_style, list) or not travel_style:
+            travel_style = None
+
+        schedule_intensity = item.get("schedule_intensity")
+        if not isinstance(schedule_intensity, str) or not schedule_intensity:
+            schedule_intensity = None
+
+        if travel_style is None and schedule_intensity is None:
+            continue
+
+        by_day[day] = {
+            "day": day,
+            "travel_style": travel_style,
+            "schedule_intensity": schedule_intensity,
+        }
+
+    return list(by_day.values())
+
+
 def _client() -> OpenAI:
     """
     Upstage OpenAI-compatible API 클라이언트를 생성합니다.
@@ -317,13 +417,22 @@ def parse_user_input_mock(user_input: str) -> dict[str, Any]:
     user_input을 반영합니다.
     """
 
-    target_day = _detect_target_day(user_input)
-    target_time_slot = _detect_target_time_slot(user_input)
-    # 둘 다 있을 때만 "특정 일차의 특정 시간대 교체" 신호로 본다 — 하나만 있으면
-    # (예: "3일 여행"의 "3일"엔 시간대 언급이 없음) 기간 설명과 헷갈릴 위험이 크다.
-    if target_day is None or target_time_slot is None:
-        target_day = None
-        target_time_slot = None
+    move_source_day, move_source_slot, move_destination_day, move_destination_slot = (
+        _detect_move_request(user_input)
+    )
+
+    target_day = None
+    target_time_slot = None
+    if move_source_day is None:
+        # 이동 요청(서로 다른 일차 2개)이 아닐 때만 슬롯 교체(일차 1개 + 시간대) 감지로 넘어간다
+        # — 안 그러면 "2일차 관광지를 1일차로"에서 "2일차"가 슬롯 교체로도 잘못 잡힐 수 있다.
+        target_day = _detect_target_day(user_input)
+        target_time_slot = _detect_target_time_slot(user_input)
+        # 둘 다 있을 때만 "특정 일차의 특정 시간대 교체" 신호로 본다 — 하나만 있으면
+        # (예: "3일 여행"의 "3일"엔 시간대 언급이 없음) 기간 설명과 헷갈릴 위험이 크다.
+        if target_day is None or target_time_slot is None:
+            target_day = None
+            target_time_slot = None
 
     return {
         **DEFAULT_PARSE_RESULT,
@@ -333,6 +442,14 @@ def parse_user_input_mock(user_input: str) -> dict[str, Any]:
         "is_peak_season": _detect_peak_season(user_input),
         "target_day": target_day,
         "target_time_slot": target_time_slot,
+        "move_source_day": move_source_day,
+        "move_source_time_slot": move_source_slot,
+        "move_destination_day": move_destination_day,
+        "move_destination_time_slot": move_destination_slot,
+        # Mock parser는 규칙 기반이라 "일차별로 다른 취향" 같은 중첩 구조를 신뢰성 있게
+        # 못 뽑아낸다 — 항상 빈 리스트를 반환해서 route_planner가 전체 공통 조건으로
+        # 자연스럽게 대체하게 한다(daily_preferences가 있는 요청은 Solar 파싱 성공을 전제).
+        "daily_preferences": [],
         "_parser": "mock",
     }
 
@@ -421,6 +538,13 @@ def _normalize_parse_result(
         "is_peak_season": bool(data.get("is_peak_season", False)),
         "target_day": _normalize_target_day(data.get("target_day")),
         "target_time_slot": _normalize_target_time_slot(data.get("target_time_slot")),
+        "move_source_day": _normalize_target_day(data.get("move_source_day")),
+        "move_source_time_slot": _normalize_movable_time_slot(data.get("move_source_time_slot")),
+        "move_destination_day": _normalize_target_day(data.get("move_destination_day")),
+        "move_destination_time_slot": _normalize_movable_time_slot(
+            data.get("move_destination_time_slot")
+        ),
+        "daily_preferences": _normalize_daily_preferences(data.get("daily_preferences")),
         "_parser": "solar",
     }
 

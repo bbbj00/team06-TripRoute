@@ -8,6 +8,7 @@ from app.agents.financial import build_financial_summary
 from app.agents.route_planner import (
     _parse_travel_days,
     build_incremental_route_plan,
+    build_place_move_route_plan,
     build_route_plan,
     build_slot_replacement_route_plan,
 )
@@ -48,6 +49,11 @@ def parse_node(state: TripRouteState) -> Dict[str, Any]:
         "is_peak_season": parsed.get("is_peak_season", False),
         "target_day": parsed.get("target_day"),
         "target_time_slot": parsed.get("target_time_slot"),
+        "move_source_day": parsed.get("move_source_day"),
+        "move_source_time_slot": parsed.get("move_source_time_slot"),
+        "move_destination_day": parsed.get("move_destination_day"),
+        "move_destination_time_slot": parsed.get("move_destination_time_slot"),
+        "daily_preferences": parsed.get("daily_preferences", []),
         "parser": parser,
         "warnings": list(parse_warnings),
         "react_trace": [
@@ -67,9 +73,11 @@ def route_planner_node(state: TripRouteState) -> Dict[str, Any]:
     2단계: Route Planner Agent가 관광지 후보/연관 장소/동선/일정을 만든다.
 
     같은 도시에 대한 기간 연장 후속 요청("3일로 늘려줘")이면 build_incremental_route_plan으로
-    기존 Day 일정은 유지한 채 늘어난 날짜만 새로 채우고, 슬롯 교체 후속 요청("2일차 점심만
-    바꿔줘")이면 build_slot_replacement_route_plan으로 그 슬롯 하나만 바꾼다. 둘 다 아니면
-    처음부터 다시 계획한다.
+    기존 Day 일정은 유지한 채 늘어난 날짜만 새로 채우고, 장소 이동 후속 요청("2일차 관광지를
+    1일차로 옮겨줘")이면 build_place_move_route_plan으로 그 장소를 목적지로 옮기고(목적지에
+    있던 기존 장소는 빠짐) 비게 된 원래 자리는 새로 검색한 장소로 채우며, 슬롯 교체 후속
+    요청("2일차 점심만 바꿔줘")이면 build_slot_replacement_route_plan으로 그 슬롯 하나만
+    새 장소로 바꾼다. 셋 다 아니면 처음부터 다시 계획한다.
     """
     parsed = {
         "city": state.get("city"),
@@ -81,6 +89,9 @@ def route_planner_node(state: TripRouteState) -> Dict[str, Any]:
         "prefer_local": state.get("prefer_local", False),
         "prefer_budget": state.get("prefer_budget", False),
         "is_peak_season": state.get("is_peak_season", False),
+        # daily_preferences는 처음 계획(전체 재계획 경로)에서만 쓰인다 — 기간연장/장소이동/
+        # 슬롯교체는 이미 확정된 일정을 다루는 후속 요청이라 이 필드를 보지 않는다.
+        "daily_preferences": state.get("daily_preferences", []),
     }
 
     previous_condition = state.get("previous_condition_summary")
@@ -108,6 +119,15 @@ def route_planner_node(state: TripRouteState) -> Dict[str, Any]:
         and target_time_slot is not None
     )
 
+    move_source_day = state.get("move_source_day")
+    move_destination_day = state.get("move_destination_day")
+    is_place_move = (
+        not is_duration_extension
+        and previous_result is not None
+        and move_source_day is not None
+        and move_destination_day is not None
+    )
+
     if is_duration_extension:
         route_plan = build_incremental_route_plan(
             parsed=parsed,
@@ -115,6 +135,17 @@ def route_planner_node(state: TripRouteState) -> Dict[str, Any]:
             people_count=state["people_count"],
             previous_result=previous_result,
             previous_days=previous_days,
+        )
+    elif is_place_move:
+        route_plan = build_place_move_route_plan(
+            parsed=parsed,
+            transport_mode=state["transport_mode"],
+            people_count=state["people_count"],
+            previous_result=previous_result,
+            source_day=move_source_day,
+            source_time_slot=state.get("move_source_time_slot"),
+            destination_day=move_destination_day,
+            destination_time_slot=state.get("move_destination_time_slot"),
         )
     elif is_slot_replacement:
         route_plan = build_slot_replacement_route_plan(

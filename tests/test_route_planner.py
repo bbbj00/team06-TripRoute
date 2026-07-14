@@ -7,12 +7,15 @@ from app.agents.route_planner import (
     _fetch_lodging_fee,
     _filter_places_within_radius,
     _haversine_km,
+    _is_lodging_by_name,
     _normalize_rag_place,
     _reorder_places_for_time_slots,
     _search_lodging_place,
+    _search_rag_places,
     _sort_by_prefer_local,
     _sort_by_rating_desc,
     build_incremental_route_plan,
+    build_place_move_route_plan,
     build_slot_replacement_route_plan,
 )
 
@@ -132,6 +135,20 @@ def test_build_place_reason_handles_missing_signals():
 
     assert "관광지" in reason
     assert "여행" in reason
+
+
+def test_build_place_reason_restaurant_and_lodging_skip_taste_match_wording():
+    # 숙박/음식점은 "OO 취향에 잘 맞습니다"라고 하면 억지로 끼워맞춘 것처럼 읽히니,
+    # 평점/리뷰수 기반으로 자연스럽게 설명해야 하고 "취향" 언급 자체가 없어야 한다.
+    restaurant_reason = _build_place_reason("음식점", 4.5, 1200, ["먹거리"])
+    lodging_reason = _build_place_reason("숙박", 4.2, 50, ["힐링"])
+
+    assert "취향" not in restaurant_reason
+    assert "취향" not in lodging_reason
+    assert "맛집" in restaurant_reason
+    assert "숙소" in lodging_reason
+    assert "1,200" in restaurant_reason
+    assert "4.2" in lodging_reason
 
 
 def test_normalize_rag_place_reason_differs_per_place():
@@ -884,3 +901,356 @@ def test_build_slot_replacement_route_plan_skips_lodging_checkin_slot():
     # 숙박 슬롯 교체는 지원하지 않으므로 기존 일정을 그대로 유지해야 한다
     assert result["daily_schedule"] == _fake_previous_result()["daily_schedule"]
     assert any("체크인" in w for w in result["warnings"])
+
+
+def test_is_lodging_by_name_detects_caravan_and_glamping():
+    assert _is_lodging_by_name("강릉 금진리321카라반")
+    assert _is_lodging_by_name("OO글램핑")
+    assert _is_lodging_by_name("강릉경포카라반파크")
+    assert not _is_lodging_by_name("경포해변 서핑 캠프")
+
+
+def test_search_rag_places_excludes_caravan_tagged_as_leports(monkeypatch):
+    # TourAPI가 카라반/글램핑/캠핑장을 "레포츠"로 잘못 등록해둔 경우가 실제로 있어서,
+    # category만으로는 못 거르고 이름으로도 걸러야 한다(실제 DB에서 확인된 케이스).
+    monkeypatch.setattr(
+        route_planner,
+        "retrieve_places_by_taste",
+        lambda *args, **kwargs: [
+            {
+                "content_id": "1", "title": "강릉 금진리321카라반", "category": "레포츠",
+                "address": "강원특별자치도 강릉시",
+            },
+            {
+                "content_id": "2", "title": "안목해변", "category": "관광지",
+                "address": "강원특별자치도 강릉시",
+            },
+        ],
+    )
+
+    places = _search_rag_places(
+        city="강릉", travel_style=["바다"], prefer_local=False, max_places=5
+    )
+
+    names = {p["name"] for p in places}
+    assert "안목해변" in names
+    assert "강릉 금진리321카라반" not in names
+
+
+def test_search_lodging_place_includes_caravan_tagged_as_leports(monkeypatch):
+    monkeypatch.setattr(
+        route_planner,
+        "retrieve_places_by_taste",
+        lambda *args, **kwargs: [
+            {
+                "content_id": "c", "title": "강릉경포카라반파크", "category": "레포츠",
+                "rating": 4.5, "review_count": 30, "address": "강원특별자치도 강릉시",
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        route_planner,
+        "get_detail_common",
+        lambda content_id: {
+            "mapx": "128.9", "mapy": "37.7",
+            "lDongRegnCd": "51", "lDongSignguCd": "150",
+            "addr1": "강원특별자치도 강릉시", "contenttypeid": "28",
+        },
+    )
+    monkeypatch.setattr(
+        route_planner,
+        "cached_call",
+        lambda namespace, params, fetch_fn, ttl_seconds=None: fetch_fn(),
+    )
+    monkeypatch.setattr(
+        route_planner, "get_detail_info", lambda content_id, content_type_id: []
+    )
+
+    anchor_places = [{"latitude": 37.7, "longitude": 128.9}]
+
+    result = _search_lodging_place(city="강릉", anchor_places=anchor_places)
+
+    # category가 "레포츠"인데도 이름으로 숙박 후보로 선택돼야 한다
+    assert result is not None
+    assert result["name"] == "강릉경포카라반파크"
+
+
+def _mock_build_real_routes(monkeypatch):
+    monkeypatch.setattr(
+        route_planner,
+        "_build_real_routes",
+        lambda selected_places, transport_mode: (
+            [
+                {
+                    "from": selected_places[i]["name"], "to": selected_places[i + 1]["name"],
+                    "estimated_time": "약 7분", "estimated_time_minutes": 7,
+                }
+                for i in range(len(selected_places) - 1)
+            ],
+            [],
+        ),
+    )
+
+
+def _fake_backfill_place():
+    return {
+        "name": "장소C", "title": "장소C", "content_id": "3", "address": "",
+        "longitude": 128.93, "latitude": 37.73, "image_url": "",
+        "reason": "", "source": "rag", "category": "관광지", "content_type_id": None,
+        "rating": None, "review_count": None,
+    }
+
+
+def test_build_place_move_route_plan_moves_place_and_backfills_source(monkeypatch):
+    _mock_build_real_routes(monkeypatch)
+    monkeypatch.setattr(
+        route_planner, "_search_rag_places", lambda **kwargs: [_fake_backfill_place()]
+    )
+    monkeypatch.setattr(route_planner, "_fill_missing_place_details", lambda places: places)
+
+    result = build_place_move_route_plan(
+        parsed={"city": "강릉"},
+        transport_mode="대중교통",
+        people_count=2,
+        previous_result=_fake_previous_result(),
+        source_day=2,
+        source_time_slot="오전",
+        destination_day=1,
+        destination_time_slot="오전",
+    )
+
+    daily_schedule = result["daily_schedule"]
+    # destination(Day 1 오전)에는 옮겨온 장소B가 들어가고, 원래 있던 장소A는 제외된다
+    assert daily_schedule[0]["day"] == "Day 1"
+    assert daily_schedule[0]["time_slot"] == "오전"
+    assert daily_schedule[0]["place_name"] == "장소B"
+    # source(Day 2 오전)의 빈 자리는 새로 검색된 장소로 채워진다
+    assert daily_schedule[2]["day"] == "Day 2"
+    assert daily_schedule[2]["place_name"] == "장소C"
+    # 체크인(숙박) 슬롯은 이동 대상이 아니므로 그대로 유지
+    assert daily_schedule[1]["place_name"] == "강릉호텔"
+
+    selected_names = {p["name"] for p in result["selected_places"]}
+    assert selected_names == {"장소B", "강릉호텔", "장소C"}
+    assert "장소A" not in selected_names
+
+    assert any("옮겼습니다" in w for w in result["warnings"])
+
+
+def test_build_place_move_route_plan_defaults_to_first_movable_slot(monkeypatch):
+    _mock_build_real_routes(monkeypatch)
+    monkeypatch.setattr(
+        route_planner, "_search_rag_places", lambda **kwargs: [_fake_backfill_place()]
+    )
+    monkeypatch.setattr(route_planner, "_fill_missing_place_details", lambda places: places)
+
+    # 시간대를 지정 안 해도(None) 그 날짜의 첫 이동 가능한 슬롯을 자동으로 골라야 한다
+    result = build_place_move_route_plan(
+        parsed={"city": "강릉"},
+        transport_mode="대중교통",
+        people_count=2,
+        previous_result=_fake_previous_result(),
+        source_day=2,
+        source_time_slot=None,
+        destination_day=1,
+        destination_time_slot=None,
+    )
+
+    daily_schedule = result["daily_schedule"]
+    assert daily_schedule[0]["place_name"] == "장소B"
+    assert daily_schedule[2]["place_name"] == "장소C"
+
+
+def test_build_place_move_route_plan_returns_unchanged_when_slot_missing():
+    result = build_place_move_route_plan(
+        parsed={"city": "강릉"},
+        transport_mode="대중교통",
+        people_count=2,
+        previous_result=_fake_previous_result(),
+        source_day=1,
+        source_time_slot="저녁",  # Day 1에는 저녁 슬롯이 없음
+        destination_day=2,
+        destination_time_slot="오전",
+    )
+
+    assert result["daily_schedule"] == _fake_previous_result()["daily_schedule"]
+
+
+def test_build_place_move_route_plan_cancels_when_backfill_not_found(monkeypatch):
+    # source 자리를 채울 후보를 못 찾으면 이동 자체를 취소하고 기존 일정을 그대로 유지해야 한다
+    # (destination만 바뀌고 source가 빈 채로 남는 반쪽짜리 상태를 피하기 위함).
+    monkeypatch.setattr(route_planner, "_search_rag_places", lambda **kwargs: [])
+    monkeypatch.setattr(route_planner, "_search_real_places", lambda **kwargs: [])
+
+    result = build_place_move_route_plan(
+        parsed={"city": "강릉"},
+        transport_mode="대중교통",
+        people_count=2,
+        previous_result=_fake_previous_result(),
+        source_day=2,
+        source_time_slot="오전",
+        destination_day=1,
+        destination_time_slot="오전",
+    )
+
+    assert result["daily_schedule"] == _fake_previous_result()["daily_schedule"]
+    assert any("찾지 못해" in w for w in result["warnings"])
+
+
+def test_build_time_slots_day_intensity_overrides_only_affects_that_day():
+    slots = route_planner._build_time_slots(
+        travel_days=3,
+        schedule_intensity="보통",
+        season="여름",
+        day_intensity_overrides={2: "빡빡한 일정"},
+    )
+    day1 = [s for s in slots if s[0] == "Day 1"]
+    day2 = [s for s in slots if s[0] == "Day 2"]
+    day3 = [s for s in slots if s[0] == "Day 3"]
+
+    # 오버라이드가 적용된 Day 2만 관광지 슬롯이 하나 더(늦은 오후) 붙어야 한다
+    assert ("Day 2", "늦은 오후") in day2
+    assert ("Day 1", "늦은 오후") not in day1
+    assert ("Day 3", "늦은 오후") not in day3
+
+
+def test_search_day_partitioned_candidates_uses_override_style_per_day(monkeypatch):
+    def fake_search_rag_places(city, travel_style, prefer_local, max_places):
+        if "액티비티" in travel_style:
+            return [
+                {
+                    "name": "서핑레슨", "title": "서핑레슨", "content_id": "10", "address": "",
+                    "longitude": 128.90, "latitude": 37.70, "category": "레포츠", "source": "rag",
+                },
+            ]
+        return [
+            {
+                "name": "안목해변", "title": "안목해변", "content_id": "1", "address": "",
+                "longitude": 128.90, "latitude": 37.70, "category": "관광지", "source": "rag",
+            },
+            {
+                "name": "테라로사", "title": "테라로사", "content_id": "2", "address": "",
+                "longitude": 128.91, "latitude": 37.71, "category": "관광지", "source": "rag",
+            },
+        ]
+
+    monkeypatch.setattr(route_planner, "_search_rag_places", fake_search_rag_places)
+    monkeypatch.setattr(route_planner, "_fill_missing_place_details", lambda places: places)
+
+    time_slots = [("Day 1", "오전"), ("Day 1", "오후"), ("Day 2", "오전")]
+
+    candidates, data_source = route_planner._search_day_partitioned_candidates(
+        city="강릉",
+        time_slots=time_slots,
+        travel_style=["바다"],
+        prefer_local=False,
+        day_travel_style_overrides={2: ["액티비티"]},
+    )
+
+    names = [c["name"] for c in candidates]
+    # Day 1(전체 공통 취향)이 먼저, Day 2(오버라이드된 취향)가 그 다음 순서로 이어붙어야 한다
+    assert names == ["안목해변", "테라로사", "서핑레슨"]
+    assert data_source == "rag"
+
+
+def test_search_day_partitioned_candidates_pads_shortfall_with_global_fallback(monkeypatch):
+    # Day 2 전용 취향("액티비티")으로는 슬롯 수(2개)를 다 못 채우는 상황을 흉내낸다.
+    def fake_search_rag_places(city, travel_style, prefer_local, max_places):
+        if "액티비티" in travel_style:
+            return [
+                {
+                    "name": "서핑레슨", "title": "서핑레슨", "content_id": "10", "address": "",
+                    "longitude": 128.90, "latitude": 37.70, "category": "레포츠", "source": "rag",
+                },
+            ]
+        # 전체 공통 취향("바다") 검색 — Day 1 몫 + 부족분 보충용으로 재사용됨
+        return [
+            {
+                "name": "안목해변", "title": "안목해변", "content_id": "1", "address": "",
+                "longitude": 128.90, "latitude": 37.70, "category": "관광지", "source": "rag",
+            },
+            {
+                "name": "테라로사", "title": "테라로사", "content_id": "2", "address": "",
+                "longitude": 128.91, "latitude": 37.71, "category": "관광지", "source": "rag",
+            },
+        ]
+
+    monkeypatch.setattr(route_planner, "_search_rag_places", fake_search_rag_places)
+    monkeypatch.setattr(route_planner, "_fill_missing_place_details", lambda places: places)
+
+    # Day 1: 1슬롯(전체 공통), Day 2: 2슬롯(오버라이드, 근데 후보가 1개뿐)
+    time_slots = [("Day 1", "오전"), ("Day 2", "오전"), ("Day 2", "오후")]
+
+    candidates, _ = route_planner._search_day_partitioned_candidates(
+        city="강릉",
+        time_slots=time_slots,
+        travel_style=["바다"],
+        prefer_local=False,
+        day_travel_style_overrides={2: ["액티비티"]},
+    )
+
+    names = [c["name"] for c in candidates]
+    # Day 1(안목해변) + Day 2(서핑레슨 하나뿐이라 전체 공통 취향으로 1개 보충 = 테라로사)
+    assert names == ["안목해변", "서핑레슨", "테라로사"]
+
+
+def test_build_route_plan_applies_daily_preferences_per_day(monkeypatch):
+    sea_items = [
+        {
+            "content_id": str(i), "title": f"바다장소{i}", "address": "강원특별자치도 강릉시",
+            "category": "관광지", "longitude": 128.90 + i * 0.001, "latitude": 37.70 + i * 0.001,
+        }
+        for i in range(1, 5)
+    ]
+    activity_items = [
+        {
+            "content_id": str(100 + i), "title": f"액티비티장소{i}", "address": "강원특별자치도 강릉시",
+            "category": "레포츠", "longitude": 128.90 + i * 0.001, "latitude": 37.70 + i * 0.001,
+        }
+        for i in range(1, 4)
+    ]
+
+    def fake_retrieve(taste_text, match_count, city):
+        return activity_items if "액티비티" in taste_text else sea_items
+
+    monkeypatch.setattr(route_planner, "retrieve_places_by_taste", fake_retrieve)
+    monkeypatch.setattr(
+        route_planner,
+        "get_detail_common",
+        lambda content_id: {
+            "mapx": "128.9", "mapy": "37.7", "lDongRegnCd": "51", "lDongSignguCd": "150",
+            "addr1": "강원특별자치도 강릉시",
+        },
+    )
+    monkeypatch.setattr(route_planner, "get_route", lambda origin, destination: {})
+    monkeypatch.setattr(
+        route_planner,
+        "summarize_route",
+        lambda route: {
+            "distance_km": 1.0, "duration_min": 10, "taxi_fare": 5000, "toll_fare": 0,
+        },
+    )
+    monkeypatch.setattr(route_planner, "get_course_content_ids", lambda city, **kwargs: [])
+
+    result = route_planner.build_route_plan(
+        parsed={
+            "city": "강릉",
+            "duration": "1박 2일",
+            "travel_style": ["바다"],
+            "prefer_local": False,
+            "schedule_intensity": "여유로운 일정",
+            "daily_preferences": [
+                {"day": 2, "travel_style": ["액티비티"], "schedule_intensity": None},
+            ],
+        },
+        transport_mode="대중교통",
+        people_count=2,
+    )
+
+    day1_places = {e["place_name"] for e in result["daily_schedule"] if e["day"] == "Day 1"}
+    day2_places = {e["place_name"] for e in result["daily_schedule"] if e["day"] == "Day 2"}
+
+    # Day 2만 오버라이드된 "액티비티" 취향 장소가 들어가고, Day 1은 전체 공통 "바다" 취향을 따른다
+    assert any(name.startswith("액티비티장소") for name in day2_places)
+    assert not any(name.startswith("액티비티장소") for name in day1_places)
+    assert any(name.startswith("바다장소") for name in day1_places)
