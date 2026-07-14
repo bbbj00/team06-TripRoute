@@ -289,11 +289,25 @@
 
 ## Step 8. Docker 컨테이너화 및 CI/CD 기반 GCP 배포
 
-- [ ] 배포 대상 서비스 확정 (Cloud Run 유력 — FastAPI를 컨테이너로 띄우고 Gradio도 같은 서비스 또는 별도 서비스로 서빙)
-- [ ] `Dockerfile` 작성 및 로컬 컨테이너 실행 확인
-- [ ] `.env`의 API Key/Secret을 GCP Secret Manager(또는 Cloud Run 환경변수)로 이관
-- [ ] CI/CD 파이프라인 구성 (예: GitHub Actions → 컨테이너 이미지 빌드 → Artifact Registry push → Cloud Run 배포 자동화)
-- [ ] Cloud Run 배포 및 외부 접속 URL로 최종 시연 확인
+> 배포 대상이 원래 계획했던 **Cloud Run이 아니라 GCE(Compute Engine) VM**으로 바뀌었습니다.
+> FastAPI 한 컨테이너 안에서 `/ui` 경로로 Gradio까지 같이 서빙(별도 서비스 분리 안 함).
+
+- [x] 배포 대상 서비스 확정 — GCE VM 한 대에 Docker Compose로 컨테이너 실행(Cloud Run 아님)
+- [x] `Dockerfile` 작성 (멀티스테이지 빌드: 의존성 빌드용 `builder` + 실행용 `runtime`,
+      non-root `appuser`로 실행) — `docker-compose.prod.yml` 헬스체크가 정상 통과하는 것으로
+      로컬/운영 컨테이너 실행 자체는 확인됨
+- [ ] `.env`의 API Key/Secret을 GCP Secret Manager로 이관 — **아직 미이관.** 실제로는
+      GCE VM의 `/opt/triproute/.env` 파일을 `docker-compose.prod.yml`이 `env_file`로 그대로
+      읽는 방식(평문 파일 그대로 사용). GitHub Actions Secrets는 SSH 접속 정보(`GCE_HOST`/
+      `GCE_USERNAME`/`GCE_SSH_PRIVATE_KEY`)에만 쓰이고, 앱 자체의 API 키는 Secret Manager를
+      거치지 않음
+- [x] CI/CD 파이프라인 구성 — GitHub Actions 2단계로 완료:
+      `ci.yml`(PR/main push 시 ruff lint + pytest) →
+      `cd.yml`(CI 성공 시 Docker 이미지 빌드 → **GHCR**(Artifact Registry 아님) push →
+      SSH로 GCE VM에 `docker compose up` 배포 → `curl localhost:8000` 헬스체크)
+- [ ] 배포 및 외부 접속 URL로 최종 시연 확인 — CD 파이프라인 안에서 VM 내부
+      (`localhost:8000`) 헬스체크는 통과하는 것까지만 코드로 확인됨. **외부 접속 가능한
+      URL로 실제 시연까지 확인했는지는 저장소 코드만으로는 확인 불가** — 별도로 확인 필요
 
 ---
 
