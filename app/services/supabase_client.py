@@ -132,12 +132,17 @@ def update_place_rating(content_id: str, rating: Optional[float], review_count: 
 def get_places_missing_coordinates(limit: int = 1000) -> List[Dict[str, Any]]:
     """
     latitude가 비어있는 관광지 행을 가져옵니다 (좌표 백필 대상 조회용).
+
+    title/address도 같이 가져온다 — TourAPI detailCommon2가 삭제/비공개된 content_id에
+    완전히 빈 응답(title도 None)을 줄 때, vector_store.backfill_coordinates의 Google
+    Places 폴백 검색어로 쓸 이름이 필요하기 때문(content_id만 있으면 검색어가 없어서
+    폴백 자체가 항상 실패했었음).
     """
 
     response = (
         get_client()
         .table("places")
-        .select("content_id")
+        .select("content_id, title, address")
         .is_("latitude", "null")
         .limit(limit)
         .execute()

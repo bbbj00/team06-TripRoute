@@ -377,8 +377,12 @@ def backfill_coordinates() -> Dict[str, int]:
             # Fallback to Google Places API
             try:
                 from app.services.google_places_api import get_coordinates
-                search_name = detail.get("title", row.get("title", ""))
-                search_addr = detail.get("addr1", "")
+                # dict.get(key, default)는 key 자체가 없을 때만 default를 쓴다 — TourAPI가
+                # 콘텐츠를 못 찾아 detail의 title/addr1이 "키는 있는데 값이 None"인 경우엔
+                # default로 안 떨어지고 그대로 None이 넘어가 Google Places 검색이 항상
+                # 실패했다(실제로 폐업/삭제된 content_id 3건에서 재현 확인). `or`로 교체.
+                search_name = detail.get("title") or row.get("title") or ""
+                search_addr = detail.get("addr1") or row.get("address") or ""
                 coords = get_coordinates(search_name, address=search_addr)
                 if coords["latitude"] is not None and coords["longitude"] is not None:
                     latitude = coords["latitude"]
