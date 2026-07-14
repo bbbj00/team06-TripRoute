@@ -30,6 +30,7 @@ def create_trip_plan(request: TripPlanRequest) -> TripPlanResponse:
         people_count=request.people_count,
         previous_condition_summary=request.previous_condition_summary,
         previous_result=request.previous_result,
+        thread_id=request.thread_id,
     )
 
     return TripPlanResponse(

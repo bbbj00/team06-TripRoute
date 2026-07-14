@@ -43,3 +43,11 @@ class TripPlanRequest(BaseModel):
             "늘어난 날짜만 새로 채운다."
         ),
     )
+
+    thread_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "LangGraph 체크포인터가 State 스냅샷을 구분하는 단위(보통 대화 세션 id). "
+            "체크포인터가 꺼져 있으면(SUPABASE_DB_URL 미설정) 무시된다."
+        ),
+    )

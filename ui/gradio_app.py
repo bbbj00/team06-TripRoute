@@ -426,6 +426,9 @@ def chat(
             people_count=normalized_people_count,
             previous_condition_summary=previous_condition,
             previous_result=previous_result,
+            # 로그인 세션의 session_id를 그대로 체크포인트 thread_id로 재사용해서,
+            # 같은 대화는 LangGraph 체크포인터에도 같은 단위로 쌓이게 한다.
+            thread_id=session_id,
         )
 
         result_sections = _build_result_sections(result)

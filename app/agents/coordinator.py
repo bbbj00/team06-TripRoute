@@ -11,6 +11,7 @@ def run_triproute_coordinator(
     people_count: int = 2,
     previous_condition_summary: Dict[str, Any] | None = None,
     previous_result: Dict[str, Any] | None = None,
+    thread_id: str | None = None,
 ) -> Dict[str, Any]:
     """
     TripRoute 전체 Workflow를 제어하는 Coordinator.
@@ -21,7 +22,8 @@ def run_triproute_coordinator(
     previous_condition_summary를 넘기면 직전 턴의 조건을 이어받아 후속 대화
     ("카페 말고 맛집 위주로 바꿔줘" 등)로 처리하고, previous_result(직전 턴 전체 결과)를
     함께 넘기면 기간 연장 후속 요청("3일로 늘려줘")에서 기존 일정을 유지한 채 늘어난
-    날짜만 새로 채운다.
+    날짜만 새로 채운다. thread_id는 LangGraph 체크포인터가 켜져 있을 때 State 스냅샷을
+    구분하는 단위(보통 대화 세션 id)다.
     """
 
     return run_trip_route_workflow(
@@ -30,4 +32,5 @@ def run_triproute_coordinator(
         people_count=people_count,
         previous_condition_summary=previous_condition_summary,
         previous_result=previous_result,
+        thread_id=thread_id,
     )

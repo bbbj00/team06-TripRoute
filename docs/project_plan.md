@@ -201,7 +201,15 @@
       시 1회 컴파일해 재사용. `app/agents/coordinator.py`는 이 그래프를 호출하는 얇은
       wrapper로 축소(함수 시그니처/반환 형태 그대로 유지돼 react_loop.py/main.py/gradio_app.py
       수정 불필요). 상세 내용은 `docs/langgraph_workflow.md` 참고.
-- [ ] Supabase 기반 LangGraph Checkpoint 저장 연결
+- [x] Supabase 기반 LangGraph Checkpoint 저장 연결 — `app/graph/checkpointer.py`에서
+      `SUPABASE_DB_URL`(REST API용 `SUPABASE_URL`과 별개, Postgres 직접 연결 문자열)로
+      `PostgresSaver` 생성, `graph.compile(checkpointer=...)`로 연결. `thread_id`(보통
+      대화 세션 id)는 `coordinator.py`/`react_loop.py`/`main.py`/`gradio_app.py`까지
+      배선 완료. 연결 실패 시(설정 안 함/네트워크 문제) 경고만 남기고 체크포인트 없이
+      기존과 동일하게 동작(graceful fallback), DNS 일시 오류 대비 재시도(3회) 로직 포함.
+      Supabase pooler(transaction 모드)가 prepared statement를 지원 안 해서 나던
+      `DuplicatePreparedStatement` 에러는 `prepare_threshold=None`으로 해결. 실제
+      Supabase Postgres에 체크포인트 행이 쌓이는 것까지 라이브 검증 완료.
 - [x] `/trip/plan` 엔드포인트에서 Workflow end-to-end 실행 확인 완료 (FastAPI `TestClient`로
       실제 Solar/RAG/TourAPI/Kakao Mobility 연동까지 호출해 정상 응답 확인)
 
