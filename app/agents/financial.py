@@ -8,7 +8,7 @@ from app.services.tour_api import TourAPIError, get_detail_info, get_detail_intr
 from app.services.upstage_client import parse_usefee_amount
 from app.utils.cache import cached_call
 from app.utils.cost_rules import build_cost_summary, estimate_lodging_fee_per_night
-from app.utils.transport_rules import estimate_transport_cost
+from app.utils.transport_rules import estimate_rental_car_cost, estimate_transport_cost
 
 CATEGORY_TO_CONTENT_TYPE_ID = {
     category: content_type_id
@@ -22,6 +22,20 @@ RESTAURANT_CONTENT_TYPE_ID = "39"
 # 카페/음식점을 나눌 구조화된 필드가 없다. 이름에 카페 관련 키워드가 있으면 카페로
 # 간주하는 휴리스틱으로 대체한다(예산 감지에 쓰는 upstage_client의 키워드 매칭과 같은 방식).
 CAFE_KEYWORDS = ("카페", "커피", "cafe", "coffee")
+
+# CAFE_KEYWORDS로 못 잡는(이름에 "카페/커피" 등 키워드가 없는) 국내 주요 카페 브랜드.
+# 이런 곳들은 실제로는 카페인데 키워드 매칭만으로는 음식점(meal_places)으로 잘못
+# 분류되어 식비 단가로 계산되는 문제가 있었음.
+KNOWN_CAFE_BRANDS = (
+    "스타벅스",
+    "starbucks",
+    "빽다방",
+    "투썸플레이스",
+    "할리스",
+    "엔제리너스",
+    "탐앤탐스",
+    "파스쿠찌",
+)
 
 
 def _resolve_content_type_id(place: Dict[str, Any]) -> Optional[str]:
@@ -40,7 +54,9 @@ def _resolve_content_type_id(place: Dict[str, Any]) -> Optional[str]:
 
 def _is_cafe_place(place: Dict[str, Any]) -> bool:
     title = (place.get("title") or "").lower()
-    return any(keyword in title for keyword in CAFE_KEYWORDS)
+    if any(keyword in title for keyword in CAFE_KEYWORDS):
+        return True
+    return any(brand.lower() in title for brand in KNOWN_CAFE_BRANDS)
 
 
 def _fetch_admission_fee(place: Dict[str, Any]) -> Optional[int]:
@@ -154,31 +170,42 @@ def build_financial_summary(
     travel_days = _count_travel_days(daily_schedule)
     nights = max(0, travel_days - 1)
 
-    transport_cost = 0
-    for route in route_summary:
-        result = estimate_transport_cost(
-            distance_km=route.get("distance_km", 0),
-            car_minutes=route.get("car_minutes", 0),
-            transport_mode=transport_mode,
+    if transport_mode == "렌터카":
+        # 렌터카는 이동 거리(leg)와 무관하게 여행 전체에 대해 한 번만 빌리는 비용이므로,
+        # route_summary의 leg마다 반복 계산하면 leg 개수만큼 중복 청구된다.
+        rental_info = estimate_rental_car_cost(
             people_count=people_count,
             travel_days=travel_days,
-            taxi_fare=route.get("taxi_fare"),
         )
-        transport_cost += result.get("estimated_cost", 0)
+        transport_cost = rental_info["rental_cost"]
+    else:
+        transport_cost = 0
+        for route in route_summary:
+            result = estimate_transport_cost(
+                distance_km=route.get("distance_km", 0),
+                car_minutes=route.get("car_minutes", 0),
+                transport_mode=transport_mode,
+                people_count=people_count,
+                travel_days=travel_days,
+                taxi_fare=route.get("taxi_fare"),
+            )
+            transport_cost += result.get("estimated_cost", 0)
 
     selected_places = route_plan.get("selected_places", [])
     is_peak_season = bool(route_plan.get("is_peak_season", False))
-
-    non_lodging_places = [
-        place for place in selected_places
-        if _resolve_content_type_id(place) != LODGING_CONTENT_TYPE_ID
-    ]
-    place_fees = [_fetch_admission_fee(place) for place in non_lodging_places]
 
     restaurant_type_places = [
         place for place in selected_places
         if _resolve_content_type_id(place) == RESTAURANT_CONTENT_TYPE_ID
     ]
+    # restaurant_type_places(식사/카페)는 meal_places/cafe_places 쪽에서 별도 단가로
+    # 계산하므로, 여기서 또 입장료(place_fees) 대상에 넣으면 이중 과금된다.
+    non_lodging_places = [
+        place for place in selected_places
+        if _resolve_content_type_id(place) not in (LODGING_CONTENT_TYPE_ID, RESTAURANT_CONTENT_TYPE_ID)
+    ]
+    place_fees = [_fetch_admission_fee(place) for place in non_lodging_places]
+
     meal_places = [place for place in restaurant_type_places if not _is_cafe_place(place)]
     cafe_places = [place for place in restaurant_type_places if _is_cafe_place(place)]
     meal_price_levels = [_fetch_price_level(place) for place in meal_places]

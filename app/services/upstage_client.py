@@ -2,7 +2,6 @@
 
 import json
 import os
-import re
 from typing import Any, Dict, List
 
 from openai import OpenAI
@@ -54,6 +53,25 @@ def _detect_prefer_local(user_input: str) -> bool:
     return any(keyword in user_input for keyword in PREFER_LOCAL_KEYWORDS)
 
 
+# 부정 문맥 감지용 키워드 (Mock parser fallback용). "돈 아끼지 않고", "여름은
+# 피하고"처럼 키워드 바로 앞/뒤에 부정 표현이 붙어 뜻이 반전되는 흔한 패턴만
+# 걸러내는 간단한 근사치이며, 완전한 부정 감지를 보장하지는 않는다.
+NEGATION_MARKERS = ["안", "않", "말고", "아니", "피하"]
+
+
+def _is_negated(user_input: str, keyword: str) -> bool:
+    idx = user_input.find(keyword)
+
+    if idx == -1:
+        return False
+
+    window_start = max(0, idx - 6)
+    window_end = min(len(user_input), idx + len(keyword) + 8)
+    window = user_input[window_start:window_end]
+
+    return any(marker in window for marker in NEGATION_MARKERS)
+
+
 # "가성비", "저렴하게" 같은 예산 중시 표현 감지용 키워드 (Mock parser fallback용, prefer_local과 동일한 이유)
 PREFER_BUDGET_KEYWORDS = [
     "가성비",
@@ -66,7 +84,10 @@ PREFER_BUDGET_KEYWORDS = [
 
 
 def _detect_prefer_budget(user_input: str) -> bool:
-    return any(keyword in user_input for keyword in PREFER_BUDGET_KEYWORDS)
+    return any(
+        keyword in user_input and not _is_negated(user_input, keyword)
+        for keyword in PREFER_BUDGET_KEYWORDS
+    )
 
 
 # 국내 숙박 성수기 시즌 감지용 키워드 (Mock parser fallback용). Solar는 날짜/시기를
@@ -85,7 +106,10 @@ PEAK_SEASON_KEYWORDS = [
 
 
 def _detect_peak_season(user_input: str) -> bool:
-    return any(keyword in user_input for keyword in PEAK_SEASON_KEYWORDS)
+    return any(
+        keyword in user_input and not _is_negated(user_input, keyword)
+        for keyword in PEAK_SEASON_KEYWORDS
+    )
 
 
 # 실제 관광지 데이터(Supabase places 테이블)를 확보해둔 도시만 감지 대상으로 함
@@ -192,12 +216,34 @@ def _extract_json(text: str) -> dict[str, Any]:
     except json.JSONDecodeError:
         pass
 
-    match = re.search(r"\{.*\}", text, re.DOTALL)
+    # 그리디 정규식(\{.*\})은 부연설명 안에 별도 중괄호가 있으면 첫 '{'부터
+    # 마지막 '}'까지를 통째로 묶어버려 서로 다른 JSON 블록을 이어붙인 깨진
+    # 문자열을 만든다. 대신 첫 '{'부터 중괄호 깊이를 세어 짝이 맞는 지점까지만
+    # 후보로 삼고, 파싱에 실패하면 다음 '{'로 넘어가며 재시도한다.
+    start = text.find("{")
 
-    if not match:
-        raise ValueError("Solar 응답에서 JSON 객체를 찾지 못했습니다.")
+    while start != -1:
+        depth = 0
 
-    return json.loads(match.group())
+        for index in range(start, len(text)):
+            char = text[index]
+
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+
+                if depth == 0:
+                    candidate = text[start : index + 1]
+
+                    try:
+                        return json.loads(candidate)
+                    except json.JSONDecodeError:
+                        break
+
+        start = text.find("{", start + 1)
+
+    raise ValueError("Solar 응답에서 JSON 객체를 찾지 못했습니다.")
 
 
 def _normalize_parse_result(
@@ -207,10 +253,11 @@ def _normalize_parse_result(
     Solar 파싱 결과의 누락값과 자료형을 정규화합니다.
     """
 
-    travel_style = (
-        data.get("travel_style")
-        or DEFAULT_PARSE_RESULT["travel_style"]
-    )
+    travel_style = data.get("travel_style")
+    if travel_style is None:
+        # 키 자체가 없을 때만 데모 기본값을 적용한다. 빈 리스트([])는 "취향
+        # 없음"이라는 유효한 응답이므로 그대로 존중해야 한다.
+        travel_style = DEFAULT_PARSE_RESULT["travel_style"]
 
     if isinstance(travel_style, str):
         travel_style = [travel_style]
@@ -383,10 +430,14 @@ def parse_usefee_amount(usefee_text: str) -> int | None:
         )
         content = response.choices[0].message.content or ""
         data = _extract_json(content)
+
+        if not isinstance(data, dict):
+            return None
+
+        amount = data.get("amount")
     except Exception:
         return None
 
-    amount = data.get("amount")
     if amount is None:
         return None
 

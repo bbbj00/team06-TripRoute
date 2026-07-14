@@ -28,6 +28,7 @@ class TripRouteState(TypedDict, total=False):
     prefer_local: bool
     prefer_budget: bool
     is_peak_season: bool
+    must_include_places: List[str]
     parser: str
 
     # Route Planner 결과 (build_route_plan)

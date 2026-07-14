@@ -115,3 +115,47 @@ def update_session_title(session_id: str, title: str) -> Dict[str, Any]:
         .execute()
     )
     return response.data[0]
+
+
+def update_session_result(session_id: str, result: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    세션에 마지막으로 생성된 여행 계획 전체(daily_schedule/route_summary/cost_summary 등)를
+    저장한다. "최근 대화" 목록에서 세션을 다시 열었을 때 결과 패널(일정/동선/비용)을
+    다시 채워주기 위한 용도 — last_condition_summary만으로는 그 결과물 자체를 복원할
+    수 없어서 별도 컬럼에 통째로 저장한다.
+    """
+    response = (
+        get_client()
+        .table("chat_sessions")
+        .update(
+            {
+                "last_result": result,
+                "updated_at": _now_iso(),
+            }
+        )
+        .eq("id", session_id)
+        .execute()
+    )
+    return response.data[0]
+
+
+def get_session_result(session_id: str, user_id: str) -> Optional[Dict[str, Any]]:
+    """
+    세션에 저장된 마지막 여행 계획 결과를 가져온다. session_id가 실제로 user_id
+    소유가 아니면 None을 반환한다.
+    """
+    if not _session_belongs_to_user(session_id, user_id):
+        return None
+
+    response = (
+        get_client()
+        .table("chat_sessions")
+        .select("last_result")
+        .eq("id", session_id)
+        .limit(1)
+        .execute()
+    )
+    if not response.data:
+        return None
+
+    return response.data[0].get("last_result")

@@ -338,36 +338,41 @@ def _fill_missing_place_details(places: List[Place]) -> List[Place]:
         return places
 
     def _apply(place: Place) -> None:
+        # TourAPIError뿐 아니라 캐시 파일 손상(json.JSONDecodeError/OSError) 등 예상치
+        # 못한 예외까지 여기서 넓게 잡아야 한다 — 한 장소의 상세조회 실패가
+        # executor.map 밖으로 전파되면 전체 trip-plan 요청이 그대로 죽어버린다
+        # (real_api 분기가 동일한 실패 종류에 mock fallback을 두는 것과 대비됨).
+        # 실패 시 lat/lng은 None으로 남기고 경고만 남긴 뒤 다음 장소로 넘어간다.
         try:
             detail = _fetch_detail_common_cached(place["content_id"])
-        except TourAPIError:
-            return
 
-        place["latitude"] = _to_float(detail.get("mapy"))
-        place["longitude"] = _to_float(detail.get("mapx"))
-        place["area_code"] = detail.get("lDongRegnCd") or detail.get("areacode")
-        place["signgu_code"] = (
-            detail.get("lDongSignguCd") or detail.get("sigungucode")
-        )
-        if not place.get("address"):
-            place["address"] = detail.get("addr1") or ""
-        if not place.get("image_url"):
-            place["image_url"] = detail.get("firstimage") or ""
-        if not place.get("category"):
-            place["category"] = content_type_id_to_category(detail.get("contenttypeid"))
+            place["latitude"] = _to_float(detail.get("mapy"))
+            place["longitude"] = _to_float(detail.get("mapx"))
+            place["area_code"] = detail.get("lDongRegnCd") or detail.get("areacode")
+            place["signgu_code"] = (
+                detail.get("lDongSignguCd") or detail.get("sigungucode")
+            )
+            if not place.get("address"):
+                place["address"] = detail.get("addr1") or ""
+            if not place.get("image_url"):
+                place["image_url"] = detail.get("firstimage") or ""
+            if not place.get("category"):
+                place["category"] = content_type_id_to_category(detail.get("contenttypeid"))
 
-        # TourAPI에서 좌표를 받지 못한 경우 Google Places API로 Fallback
-        if place.get("latitude") is None or place.get("longitude") is None:
-            try:
-                from app.services.google_places_api import get_coordinates
-                search_name = place.get("name") or ""
-                search_addr = place.get("address") or detail.get("addr1") or ""
-                coords = get_coordinates(search_name, address=search_addr)
-                if coords["latitude"] is not None and coords["longitude"] is not None:
-                    place["latitude"] = coords["latitude"]
-                    place["longitude"] = coords["longitude"]
-            except Exception as e:
-                print(f"[경고] Google Places 좌표 보완 실패 ({place.get('name')}): {e}")
+            # TourAPI에서 좌표를 받지 못한 경우 Google Places API로 Fallback
+            if place.get("latitude") is None or place.get("longitude") is None:
+                try:
+                    from app.services.google_places_api import get_coordinates
+                    search_name = place.get("name") or ""
+                    search_addr = place.get("address") or detail.get("addr1") or ""
+                    coords = get_coordinates(search_name, address=search_addr)
+                    if coords["latitude"] is not None and coords["longitude"] is not None:
+                        place["latitude"] = coords["latitude"]
+                        place["longitude"] = coords["longitude"]
+                except Exception as e:
+                    print(f"[경고] Google Places 좌표 보완 실패 ({place.get('name')}): {e}")
+        except Exception as e:
+            print(f"[경고] 장소 상세정보 조회 실패 ({place.get('name')}): {e}")
 
     with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_DETAIL_LOOKUPS) as executor:
         list(executor.map(_apply, targets))
@@ -404,6 +409,10 @@ def _search_rag_places(
     places = _deduplicate_places(
         [_normalize_rag_place(item, travel_style) for item in results]
     )
+    # 숙박은 일반 관광지 취향 유사도로 뽑히면 안 된다 — _search_lodging_place가 따로
+    # 하나만 골라서 체크인 시점에 넣으므로, 여기 섞여 들어오면 호텔이 오전/오후 같은
+    # 일반 활동 슬롯에 중복으로 배정되는 문제가 생긴다.
+    places = [place for place in places if place.get("category") != "숙박"]
 
     return _sort_by_prefer_local(places, prefer_local)
 
@@ -421,6 +430,43 @@ def _sort_by_rating_desc(places: List[Place]) -> List[Place]:
         return (0, -rating)
 
     return sorted(places, key=sort_key)
+
+
+# must_include 장소명 검색(searchKeyword2) 결과. 이름 자체는 자주 바뀌지 않으므로
+# detail_common과 동일한 TTL(7일)로 캐싱해서 동일 도시+장소 조합의 반복 요청 시 재조회를 막는다.
+MUST_INCLUDE_SEARCH_CACHE_TTL_SECONDS = DETAIL_COMMON_CACHE_TTL_SECONDS
+
+
+def _resolve_must_include_place(
+    p_name: str,
+    city: str,
+    travel_style: List[str],
+) -> Place | None:
+    """
+    필수 방문지 이름 하나를 TourAPI searchKeyword2로 조회해 Place로 변환한다.
+    도시명 + 장소명 조합으로 먼저 찾고, 결과가 없으면 장소명만으로 다시 찾는다.
+    """
+    try:
+        search_res = cached_call(
+            namespace="must_include_search",
+            params={"city": city, "query": f"{city} {p_name}"},
+            fetch_fn=lambda: search_keyword(f"{city} {p_name}", num_of_rows=3, page_no=1),
+            ttl_seconds=MUST_INCLUDE_SEARCH_CACHE_TTL_SECONDS,
+        )
+        if not search_res:
+            search_res = cached_call(
+                namespace="must_include_search",
+                params={"city": "", "query": p_name},
+                fetch_fn=lambda: search_keyword(p_name, num_of_rows=3, page_no=1),
+                ttl_seconds=MUST_INCLUDE_SEARCH_CACHE_TTL_SECONDS,
+            )
+
+        if search_res:
+            return _normalize_tour_place(search_res[0], "tour_api", travel_style)
+    except Exception:
+        pass
+
+    return None
 
 
 def _fetch_lodging_fee(
@@ -498,10 +544,20 @@ def _search_lodging_place(
     if not lodging_places:
         return None
 
+    # get_detail_info 조회를 후보 개수만큼 순차 호출하면 후보마다 ~수 초씩 누적된다 —
+    # _fill_missing_place_details와 동일한 스레드풀 패턴으로 병렬화한다.
+    priced_places = [place for place in lodging_places if place.get("content_id")]
+    with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_DETAIL_LOOKUPS) as executor:
+        fees = list(
+            executor.map(
+                lambda place: _fetch_lodging_fee(
+                    place["content_id"], people_count, is_peak_season
+                ),
+                priced_places,
+            )
+        )
     fees_by_content_id = {
-        place["content_id"]: _fetch_lodging_fee(place["content_id"], people_count, is_peak_season)
-        for place in lodging_places
-        if place.get("content_id")
+        place["content_id"]: fee for place, fee in zip(priced_places, fees)
     }
 
     if prefer_budget:
@@ -579,12 +635,24 @@ def _search_restaurant_places(
     return restaurant_places[:max_restaurants]
 
 
+# "강릉불고기 본점"과 "강릉불고기 초당점"처럼 같은 브랜드가 지점명만 다르게 TourAPI에
+# 중복 등록된 경우가 실제로 있어서, 이름 전체가 정확히 일치할 때만 잡는 방식으로는
+# 못 걸러내고 일정에 같은 곳(다른 지점)이 두 번 들어가는 문제가 있었다. 마지막 단어가
+# "점"으로 끝나면 지점명으로 보고 떼어내서 브랜드명만으로 비교한다.
+def _strip_branch_suffix(name: str) -> str:
+    tokens = name.split()
+    if len(tokens) > 1 and tokens[-1].endswith("점"):
+        return " ".join(tokens[:-1])
+    return name
+
+
 def _deduplicate_places(places: List[Place]) -> List[Place]:
     result: List[Place] = []
     seen: set[str] = set()
 
     for place in places:
-        key = re.sub(r"\s+", "", _get_place_name(place)).lower()
+        base_name = _strip_branch_suffix(_get_place_name(place))
+        key = re.sub(r"\s+", "", base_name).lower()
 
         if not key or key == "장소명없음" or key in seen:
             continue
@@ -668,7 +736,7 @@ def _search_real_places(
         page_no=1,
     )
 
-    return _deduplicate_places(
+    places = _deduplicate_places(
         [
             _normalize_tour_place(
                 item=item,
@@ -678,6 +746,8 @@ def _search_real_places(
             for item in items
         ]
     )
+    # _search_rag_places와 동일한 이유로 숙박은 일반 후보에서 제외한다.
+    return [place for place in places if place.get("category") != "숙박"]
 
 
 def _normalize_course_sub_place(sub_item: Dict[str, Any], base_name: str) -> Place:
@@ -736,6 +806,12 @@ def _search_course_related_places(
         if place.get("content_id")
     }
 
+    # 순차 조회 + 조기 종료(매칭되면 바로 break) 방식이다. 코스 목록 앞쪽에서 매칭이
+    # 나오는 경우가 흔해 대부분 한두 번의 호출로 끝나므로, get_detail_info를 전부
+    # 미리 병렬로 당겨오는 것보다 불필요한 API 호출을 줄이는 이 방식을 택했다.
+    # 다만 매칭이 늦게(또는 전혀) 나오는 최악의 경우엔 최대 20회의 콜드캐시 순차
+    # 호출이 쌓일 수 있음 — 관광지 상세조회(_fill_missing_place_details)처럼
+    # 병렬화하지 않은 트레이드오프를 여기 명시해 둔다.
     for course_id in course_content_ids:
         if len(related_places) >= max_related_places:
             break
@@ -1001,6 +1077,59 @@ def _build_daily_schedule(
     return schedule
 
 
+def _build_lodging_schedule_entry(
+    lodging_place: Place,
+    previous_place_name: str,
+) -> Dict[str, Any]:
+    place_name = _get_place_name(lodging_place)
+    route_memo = "보통 체크인은 오후 2시경부터 가능합니다."
+    if previous_place_name:
+        route_memo = f"{previous_place_name}에서 이동해 체크인합니다. " + route_memo
+
+    return {
+        "day": "Day 1",
+        "time_slot": "체크인",
+        "place": place_name,
+        "place_name": place_name,
+        "reason": lodging_place.get("reason") or "숙박 체크인 장소입니다.",
+        "route_memo": route_memo,
+        "address": lodging_place.get("address", ""),
+        "image_url": lodging_place.get("image_url", ""),
+        "latitude": lodging_place.get("latitude"),
+        "longitude": lodging_place.get("longitude"),
+        "content_id": lodging_place.get("content_id"),
+        "source": lodging_place.get("source"),
+    }
+
+
+def _insert_lodging_checkin(
+    schedule: List[Dict[str, Any]],
+    lodging_place: Place | None,
+) -> List[Dict[str, Any]]:
+    """
+    1일차 점심 슬롯 바로 뒤(보통 체크인 가능 시간인 오후 2시경)에 숙박 체크인
+    일정을 한 번만 끼워 넣는다. 1일차에 점심 슬롯이 없으면(일정이 짧거나 슬롯이
+    부족한 경우) 1일차의 마지막 일정 뒤에 넣는다.
+    """
+    if not lodging_place:
+        return schedule
+
+    insert_index = None
+    for index, entry in enumerate(schedule):
+        if entry["day"] == "Day 1" and entry["time_slot"] == "점심":
+            insert_index = index + 1
+            break
+
+    if insert_index is None:
+        day1_indexes = [index for index, entry in enumerate(schedule) if entry["day"] == "Day 1"]
+        insert_index = (day1_indexes[-1] + 1) if day1_indexes else len(schedule)
+
+    previous_place_name = schedule[insert_index - 1]["place_name"] if insert_index > 0 else ""
+    checkin_entry = _build_lodging_schedule_entry(lodging_place, previous_place_name)
+
+    return schedule[:insert_index] + [checkin_entry] + schedule[insert_index:]
+
+
 # 하루 이동시간 합이 이 기준(분)을 넘으면 과밀 경고를 남긴다. "여유로운 일정"을 골랐는데
 # 실제로는 이동만으로 하루가 빠듯하면 사용자 기대와 어긋나므로, 일정 강도별로 다르게 잡음.
 RELAXED_DAILY_TRAVEL_LIMIT_MIN = 180
@@ -1199,22 +1328,19 @@ def build_route_plan(
 
     must_include_names = list(parsed.get("must_include_places") or [])
     must_include_places_list = []
-    
+
     if must_include_names:
-        for p_name in must_include_names:
-            try:
-                from app.services.tour_api import search_keyword
-                # TourAPI로 이름 검색 (도시명 + 장소명 조합으로 검색 정확도 높이기)
-                search_res = search_keyword(f"{city} {p_name}", num_of_rows=3, page_no=1)
-                if not search_res:
-                    search_res = search_keyword(p_name, num_of_rows=3, page_no=1)
-                
-                if search_res:
-                    # 첫 번째 결과를 가져옴
-                    place = _normalize_tour_place(search_res[0], "tour_api", travel_style)
-                    must_include_places_list.append(place)
-            except Exception:
-                pass
+        # 이름별로 캐싱된 검색을 병렬로 실행한다(_fill_missing_place_details와 동일한
+        # 스레드풀 패턴). executor.map은 입력 순서를 보존하므로 must_include_names
+        # 순서 그대로 결과가 나온다.
+        with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_DETAIL_LOOKUPS) as executor:
+            resolved_places = list(
+                executor.map(
+                    lambda p_name: _resolve_must_include_place(p_name, city, travel_style),
+                    must_include_names,
+                )
+            )
+        must_include_places_list = [place for place in resolved_places if place is not None]
 
     rag_places = _search_rag_places(
         city=city,
@@ -1247,6 +1373,7 @@ def build_route_plan(
         for mp in reversed(must_include_places_list):
             if mp["name"] not in existing_names:
                 candidate_places.insert(0, mp)
+                existing_names.add(mp["name"])
 
     # 취향 순위만으로 뽑으면 서로 멀리 떨어진 장소가 섞여 동선이 비효율적일 수 있어서,
     # 취향 1등 기준으로 지리적으로 뭉친 후보만 남긴다 (순위는 그대로 유지됨)
@@ -1335,7 +1462,9 @@ def build_route_plan(
         )
 
     # 1박 이상이면 숙박 후보를 명시적으로 하나 골라둔다 (RAG가 우연히 숙박을 관광지
-    # 후보로 뽑아주길 기다리지 않고, Financial Agent가 실제 요금을 조회할 대상을 보장함)
+    # 후보로 뽑아주길 기다리지 않고, Financial Agent가 실제 요금을 조회할 대상을 보장함).
+    # 실제 일정에는 관광지처럼 여러 시간대에 걸쳐 등장하면 안 되므로, 1일차 체크인
+    # (보통 오후 2시경 가능) 시점에 한 번만 넣는다.
     lodging_place = (
         _search_lodging_place(
             city=city,
@@ -1348,6 +1477,7 @@ def build_route_plan(
         if travel_days > 1
         else None
     )
+    daily_schedule = _insert_lodging_checkin(daily_schedule, lodging_place)
 
     return {
         "tourist_spots": candidate_places,

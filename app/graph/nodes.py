@@ -1,11 +1,12 @@
 # app/graph/nodes.py
 
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from app.agents.financial import build_financial_summary
 from app.agents.route_planner import build_route_plan
 from app.core.state import TripRouteState
 from app.services.solar import parse_trip_request
+from app.utils.cost_rules import build_cost_summary
 
 PARSE_NODE = "parse_trip_request"
 ROUTE_PLANNER_NODE = "route_planner"
@@ -91,6 +92,38 @@ def route_planner_node(state: TripRouteState) -> Dict[str, Any]:
     }
 
 
+def _build_fallback_cost_summary(
+    daily_schedule: List[Dict[str, Any]],
+    people_count: int,
+) -> Dict[str, Any]:
+    """
+    Financial Agent 계산이 예외로 실패했을 때 쓰는 최소 추정치 fallback.
+    실측 API 호출 없이 build_cost_summary의 고정 단가 기본값만으로 총액을 계산해서,
+    이미 계산된 route_summary/daily_schedule을 버리지 않고 finalize_node까지 도달하게 한다.
+    """
+    travel_days = max(1, len({entry.get("day") for entry in daily_schedule if entry.get("day")}))
+    nights = max(0, travel_days - 1)
+
+    cost_summary = build_cost_summary(
+        transport_cost=0,
+        people_count=people_count,
+        days=travel_days,
+        nights=nights,
+    )
+
+    return {
+        "total": cost_summary["total"],
+        "transport_cost": cost_summary["transport"],
+        "food_cost": cost_summary["food"],
+        "cafe_cost": cost_summary["cafe"],
+        "admission_cost": cost_summary["admission"],
+        "lodging_cost": cost_summary["lodging"],
+        "total_cost": cost_summary["total"],
+        "currency": cost_summary["currency"],
+        "is_estimated": True,
+    }
+
+
 def financial_node(state: TripRouteState) -> Dict[str, Any]:
     """3단계: Financial Agent가 교통비/식비/입장료/숙박비 등 예상 비용을 계산한다."""
     route_plan = {
@@ -101,14 +134,29 @@ def financial_node(state: TripRouteState) -> Dict[str, Any]:
         "is_peak_season": state.get("is_peak_season", False),
     }
 
-    cost_summary = build_financial_summary(
-        route_plan=route_plan,
-        transport_mode=state["transport_mode"],
-        people_count=state["people_count"],
-    )
+    warnings: List[str] = []
+    try:
+        cost_summary = build_financial_summary(
+            route_plan=route_plan,
+            transport_mode=state["transport_mode"],
+            people_count=state["people_count"],
+        )
+    except Exception:
+        # build_financial_summary 내부에서 방어하지 못한 예외(dict 형태 불일치, 알려지지
+        # 않은 네트워크 예외 등)가 나면 그래프 전체를 무너뜨리는 대신 최소 추정치로
+        # 대체하고, 이미 계산된 route_summary/daily_schedule은 그대로 유지한다.
+        cost_summary = _build_fallback_cost_summary(
+            daily_schedule=route_plan["daily_schedule"],
+            people_count=state["people_count"],
+        )
+        warnings.append(
+            "예상 비용 계산 중 오류가 발생해 최소 추정치로 대체했습니다. "
+            "일정/동선 결과는 정상적으로 유지됩니다."
+        )
 
     return {
         "cost_summary": cost_summary,
+        "warnings": warnings,
         "react_trace": [
             _trace_entry(
                 3,
@@ -121,18 +169,21 @@ def financial_node(state: TripRouteState) -> Dict[str, Any]:
 
 def finalize_node(state: TripRouteState) -> Dict[str, Any]:
     """4단계: 각 Agent 결과를 최종 응답 형태로 조립한다."""
-    warnings = list(state.get("warnings", []))
+    existing_warnings = list(state.get("warnings", []))
+    new_warnings: List[str] = []
 
     if state.get("data_source", "mock") == "mock":
-        warnings.append(
+        new_warnings.append(
             "실제 관광 API 호출 실패 또는 미연결 상태로 "
             "Mock fallback 데이터를 사용했습니다."
         )
 
     if state.get("transport_mode") == "대중교통":
-        warnings.append(
+        new_warnings.append(
             "대중교통 시간과 비용은 자동차 경로 기반 참고용 추정치입니다."
         )
+
+    warnings = existing_warnings + new_warnings
 
     finalize_entry = _trace_entry(
         4,
@@ -169,5 +220,8 @@ def finalize_node(state: TripRouteState) -> Dict[str, Any]:
 
     return {
         "react_trace": [finalize_entry],
+        # warnings는 operator.add로 누적되므로, 이미 state에 쌓여 있는 existing_warnings는
+        # 다시 담지 않고 finalize_node가 새로 추가한 경고만 반환해야 중복 없이 합쳐진다.
+        "warnings": new_warnings,
         "result": result,
     }

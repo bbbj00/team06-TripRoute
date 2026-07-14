@@ -38,17 +38,15 @@ DEFAULT_MESSAGE = (
     "바다랑 감성 카페, 먹거리를 좋아해."
 )
 
-WELCOME_MESSAGE = """안녕하세요! <b>TripRoute AI 여행 플래너</b>입니다.<br><br>
-
-아래처럼 여행 조건을 자연어로 입력해주세요.<br><br>
-
-<span style='color:#8B8D98;'>&gt; 강릉으로 1박 2일 여행 가고 싶어.<br>
-&gt; 바다랑 감성 카페, 먹거리를 좋아해.</span><br><br>
-
-여행 계획이 완성되면 아래 <b>결과 패널</b>에서 일정 · 동선 · 비용을 확인할 수 있어요.<br>
-로그인하면 대화 기록이 저장되고, "카페 말고 맛집 위주로 바꿔줘" 같은 후속 요청도<br>
-이전 조건을 이어받아 처리됩니다.
-"""
+WELCOME_MESSAGE = (
+    "안녕하세요! <b>TripRoute AI 여행 플래너</b>입니다.<br><br>"
+    "아래처럼 여행 조건을 자연어로 입력해주세요.<br><br>"
+    "<span style='color:#8B8D98;'>&gt; 강릉으로 1박 2일 여행 가고 싶어.<br>"
+    "&gt; 바다랑 감성 카페, 먹거리를 좋아해.</span><br><br>"
+    "여행 계획이 완성되면 아래 <b>결과 패널</b>에서 일정 · 동선 · 비용을 확인할 수 있어요.<br>"
+    "로그인하면 대화 기록이 저장되고, \"카페 말고 맛집 위주로 바꿔줘\" 같은 후속 요청도<br>"
+    "이전 조건을 이어받아 처리됩니다."
+)
 
 LOADING_MESSAGE = "여행 계획을 만들고 있어요..."
 
@@ -167,6 +165,7 @@ def _guest_ui_updates():
         None,                      # access_token_state
         dict(GUEST_BROWSER_STATE),  # auth_browser_state
         [],                        # recent_sessions_state
+        gr.update(visible=True),   # login_trigger_btn
     )
 
 
@@ -181,6 +180,7 @@ def _logged_in_ui_updates(email, access_token, expires_at, user_id, sessions, re
         {"access_token": access_token, "expires_at": expires_at, "user_id": user_id},
         {"refresh_token": refresh_token, "user_id": user_id, "email": email},
         sessions,
+        gr.update(visible=False),  # login_trigger_btn — 로그인하면 사이드바에 최근 대화가 바로 보이니 필요 없음
     )
 
 
@@ -345,7 +345,16 @@ def load_session(session_id, auth_browser_state):
     )
     previous_condition = (session_row or {}).get("last_condition_summary")
 
-    return (history, "", previous_condition, session_id, *RESET_RESULT_TUPLE)
+    try:
+        stored_result = chat_store.get_session_result(session_id, user_id)
+    except Exception:
+        stored_result = None
+
+    result_sections = (
+        _build_result_sections(stored_result) if stored_result else RESET_RESULT_TUPLE
+    )
+
+    return (history, "", previous_condition, session_id, *result_sections)
 
 
 # ---------------------------------------------------------
@@ -391,6 +400,7 @@ def chat(
     )
 
     session_id = active_session_id
+    is_new_session = session_id is None
 
     if is_logged_in:
         try:
@@ -443,6 +453,13 @@ def chat(
             try:
                 chat_store.append_message(session_id, "assistant", reply)
                 chat_store.update_session_condition_summary(session_id, new_condition)
+                # 결과 패널(일정/동선/비용)도 통째로 저장해둔다 — "최근 대화"에서 이
+                # 세션을 다시 열었을 때 대화 내용뿐 아니라 그때 만든 일정도 같이 복원됨.
+                chat_store.update_session_result(session_id, result)
+                if is_new_session:
+                    # 첫 메시지 그대로 자르는 대신 도시·기간으로 요약된 제목을 붙인다 —
+                    # "최근 대화" 목록에서 어떤 여행인지 한눈에 알 수 있게.
+                    chat_store.update_session_title(session_id, f"{city} {duration} 여행")
             except Exception:
                 pass
 
@@ -677,6 +694,12 @@ span[data-testid="block-info"] {
     text-align: center !important;
     margin-top: 12px !important;
 }
+/* 로그인 후 사이드바에 바로 뜨는 최근 대화 블록 — 아래 "여행 설정"과 구분되게 여백/구분선 추가 */
+#logged-in-group {
+    margin-bottom: 20px !important;
+    padding-bottom: 20px !important;
+    border-bottom: 1px solid var(--tr-border) !important;
+}
 #welcome-text {
     font-size: 16px !important;
     font-weight: 600 !important;
@@ -859,8 +882,15 @@ body {
     line-height: 1.6 !important;
     max-width: 70% !important;
     font-family: "Pretendard", "Inter", -apple-system, sans-serif !important;
-    white-space: pre-wrap !important;
     word-break: break-word !important;
+}
+/* Gradio가 메시지 마크다운을 렌더링할 때 <p> 뒤에 항상 줄바꿈 문자를 하나 더 붙여서,
+   pre-wrap이면 유저 말풍선(배경색 있는 버블)에서 그 여백이 그대로 보인다(봇 답변은
+   배경이 투명해서 안 보였을 뿐). 문단 구분은 마크다운의 <p> 태그가 이미 담당하므로
+   pre-wrap 없이도 여러 줄 입력이 깨지지 않는다.
+*/
+#chatbot .message.user p:last-child {
+    margin-bottom: 0 !important;
 }
 
 #chatbot .message.bot {
@@ -1028,7 +1058,7 @@ Solar API와 Agentic Workflow를 활용한 국내 여행 일정 생성 챗봇
 
     with gr.Group(visible=False, elem_id="auth-modal") as auth_modal:
         close_modal_btn = gr.Button("✕", elem_id="close-modal-btn")
-        
+
         with gr.Group(visible=True, elem_id="logged-out-group") as logged_out_group:
             gr.Markdown("### 로그인 / 회원가입")
             email_input = gr.Textbox(label="이메일")
@@ -1037,18 +1067,6 @@ Solar API와 Agentic Workflow를 활용한 국내 여행 일정 생성 챗봇
                 login_button = gr.Button("로그인", variant="primary", elem_id="login-btn")
                 signup_button = gr.Button("회원가입", variant="secondary", elem_id="signup-btn")
             auth_message = gr.Markdown("", elem_id="auth-message")
-
-        with gr.Group(visible=False, elem_id="logged-in-group") as logged_in_group:
-            welcome_text = gr.Markdown("", elem_id="welcome-text")
-            logout_button = gr.Button("로그아웃", variant="secondary", elem_id="logout-btn")
-            gr.Markdown("### 최근 대화", elem_id="recent-session-title")
-            session_radio = gr.Radio(
-                choices=[],
-                label="",
-                show_label=False,
-                elem_id="session-radio",
-            )
-            no_session_msg = gr.Markdown("최근 대화 내역이 없습니다.", elem_id="no-session-msg", visible=False)
 
     with gr.Row():
 
@@ -1059,6 +1077,21 @@ Solar API와 Agentic Workflow를 활용한 국내 여행 일정 생성 챗봇
             elem_classes=["sidebar"],
         ):
             login_trigger_btn = gr.Button("👤 로그인 / 내 정보", elem_id="login-trigger-btn")
+
+            # 로그인하면 이 모달 밖 사이드바에 바로 최근 대화 목록을 보여준다 —
+            # "로그인/내정보" 버튼을 다시 눌러 모달을 열어야 최근 대화가 보이던
+            # 기존 방식은 사용자가 못 찾는 문제가 있었음.
+            with gr.Group(visible=False, elem_id="logged-in-group") as logged_in_group:
+                welcome_text = gr.Markdown("", elem_id="welcome-text")
+                logout_button = gr.Button("로그아웃", variant="secondary", elem_id="logout-btn")
+                gr.Markdown("### 최근 대화", elem_id="recent-session-title")
+                session_radio = gr.Radio(
+                    choices=[],
+                    label="",
+                    show_label=False,
+                    elem_id="session-radio",
+                )
+                no_session_msg = gr.Markdown("최근 대화 내역이 없습니다.", elem_id="no-session-msg", visible=False)
 
             gr.Markdown("### 여행 설정")
 
@@ -1219,6 +1252,7 @@ Solar API와 Agentic Workflow를 활용한 국내 여행 일정 생성 챗봇
         access_token_state,
         auth_browser_state,
         recent_sessions_state,
+        login_trigger_btn,
         auth_message,
     ]
 
@@ -1244,21 +1278,6 @@ Solar API와 Agentic Workflow를 활용한 국내 여행 일정 생성 챗봇
     () => {
         document.getElementById('auth-overlay')?.classList.add('hide');
         document.getElementById('auth-modal')?.classList.add('hide');
-    }
-    """
-
-    # session_radio.change는 사용자가 실제로 항목을 고를 때뿐 아니라, restore_login/
-    # do_login/do_signup이 choices를 갱신하면서 value=None으로 리셋할 때도(비동기라
-    # 모달이 열려 있는 도중 도착할 수 있음) 스퓨리어스하게 한 번 더 발동한다. 그때도
-    # 닫아버리면 로그인 직후 뜬금없이 모달이 닫히므로, 실제로 선택된(체크된) 항목이
-    # 있을 때만 닫는다.
-    CLOSE_MODAL_ON_SESSION_SELECT_JS = """
-    () => {
-        const checked = document.querySelector('#session-radio input:checked');
-        if (checked) {
-            document.getElementById('auth-overlay')?.classList.add('hide');
-            document.getElementById('auth-modal')?.classList.add('hide');
-        }
     }
     """
 
@@ -1320,7 +1339,7 @@ Solar API와 Agentic Workflow를 활용한 국내 여행 일정 생성 챗봇
             active_session_id_state,
             *result_tab_outputs,
         ],
-    ).then(fn=None, js=CLOSE_MODAL_ON_SESSION_SELECT_JS)
+    )
 
 
 # ---------------------------------------------------------
