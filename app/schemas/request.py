@@ -34,3 +34,12 @@ class TripPlanRequest(BaseModel):
             "예: '카페 말고 맛집 위주로 바꿔줘')이 이전 조건을 이어받아 처리된다."
         ),
     )
+
+    previous_result: Optional[dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "직전 턴의 전체 결과(daily_schedule/route_summary 포함). 함께 넘기면 "
+            "기간 연장 후속 요청(예: '3일로 늘려줘')에서 기존 일정을 유지한 채 "
+            "늘어난 날짜만 새로 채운다."
+        ),
+    )

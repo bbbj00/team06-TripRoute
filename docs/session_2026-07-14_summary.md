@@ -1,7 +1,7 @@
 # 2026-07-14 작업 정리
 
 전날(`docs/session_2026-07-13_summary.md`) 이후 진행한 작업을 주제별로 정리합니다.
-마지막 "컨텍스트 이어가기(부분 재계획)" 항목은 논의만 하고 구현은 보류된 상태입니다.
+1~5는 이미 커밋/병합 완료(`16b2817`), 6~7은 이어진 세션에서 새로 진행한 작업입니다.
 
 ---
 
@@ -81,15 +81,48 @@
   직접 실행), 매 요청 완료 시 전체 결과를 저장하고 세션 선택 시 복원하도록
   `chat_store.update_session_result`/`get_session_result` 추가.
 
-## 6. 논의만 하고 보류된 것: 컨텍스트 이어가기(부분 재계획)
+## 6. 컨텍스트 이어가기(부분 재계획) 구현
 
-- 현재 "카페 말고 맛집으로 바꿔줘", "3일로 늘려줘" 같은 후속 요청은 **조건(도시/기간 등)만
-  이어받아 처음부터 다시 검색**함 — 이미 확정된 Day1/Day2 장소까지 통째로 다른 곳으로
-  바뀌는 문제가 있음. 챗봇 안내 문구("이전 조건을 이어받아 처리됩니다")가 암시하는 원래
-  의도는 조건뿐 아니라 결과(장소/일정)도 이어받는 것이었으나, 실제로는 조건 레벨만
-  구현돼 있었던 것으로 확인됨.
-- 범위를 좁혀 "기간 연장 시 기존 Day는 그대로 두고 늘어난 날만 새로 채우기"부터 구현하기로
-  하고 설계 논의 중 중단됨 — 다음 세션에서 이어서 진행 필요.
+기존엔 "카페 말고 맛집으로 바꿔줘", "3일로 늘려줘" 같은 후속 요청이 **조건(도시/기간 등)만
+이어받아 처음부터 다시 검색**해서, 이미 확정된 Day1/Day2 장소까지 통째로 다른 곳으로
+바뀌는 문제가 있었음. 범위를 좁혀 아래 두 가지를 구현.
+
+### 6-1. 기간 연장 ("3일로 늘려줘")
+
+- `previous_result`(직전 턴 전체 결과: daily_schedule/route_summary 포함)를 새 State
+  필드로 추가해 API/UI 전 구간에 배선(`state.py`, `graph/workflow.py`, `agents/coordinator.py`,
+  `agents/react_loop.py`, `main.py`, `schemas/request.py`, `ui/gradio_app.py`).
+- `route_planner_node`가 같은 도시 + 새 일수 > 기존 일수일 때만 `build_incremental_route_plan`
+  (`agents/route_planner.py`)으로 분기 → 기존 Day는 그대로 두고 늘어난 날짜분 슬롯만 새로
+  채워서 뒤에 이어붙임(마지막 기존 장소 → 새 첫 장소 연결 동선 포함).
+- Financial Agent가 전체 기준으로 비용을 다시 계산할 수 있도록, `daily_schedule` 엔트리에
+  `category`/`content_type_id`를 남겨두고(기존엔 없었음) 옛 장소를 복원해서 새 장소와
+  합쳐 넘김 — 숙박은 같은 숙소로 간주해 늘어난 박수만큼 실측 요금을 유지.
+
+### 6-2. 특정 슬롯 교체 ("2일차 점심만 바꿔줘")
+
+- Solar 파싱 프롬프트(`core/prompts.py`)에 `target_day`/`target_time_slot` 필드 추가,
+  Mock 파서(`services/upstage_client.py`)에도 정규식 기반 fallback 추가("N일차"/"Day N" +
+  시간대 키워드 둘 다 있을 때만 채움 — 하나만 있으면 기간 설명과 헷갈릴 수 있어 무시).
+- `build_slot_replacement_route_plan`(`agents/route_planner.py`): 지목된 슬롯 하나만
+  교체하고, 그 앞뒤 동선(route_summary)만 재계산, 나머지 Day/슬롯은 전혀 손대지 않음.
+- 안전장치: 이미 일정에 있는 장소는 후보에서 제외, 숙박(체크인) 슬롯 교체는 이번 범위에서
+  제외(경고 남기고 기존 유지), 대체 후보를 못 찾으면 기존 일정 그대로 유지.
+
+**검증**: 기존 75개 + 신규 8개(기간 연장 3개, 슬롯 교체 5개) = pytest 80개 전부 통과.
+아직 커밋 전 상태.
+
+## 7. 다른 컴퓨터에서 "최근 대화" 저장 안 되는 문제 (원인 진단, 미해결)
+
+- 같은 계정으로 다른 컴퓨터에서 로컬호스트로 열었더니 로그인은 되는데 "최근 대화"가
+  비어있는 증상 발견.
+- **원인(추정)**: `chat_store`는 RLS를 우회하는 `service_role` 키(`SUPABASE_SERVICE_KEY`)로만
+  접속하는데, `.env`는 git에 안 올라가는 파일이라 새 컴퓨터엔 이 키가 없을 가능성이 큼 →
+  키가 없으면 `get_service_client()`가 즉시 `RuntimeError`를 던지지만, `ui/gradio_app.py`의
+  `except: pass`가 이 에러를 화면에 안 보여주고 조용히 삼킴.
+- **다음 액션**: 새 컴퓨터의 `.env`에 `SUPABASE_URL`/`SUPABASE_KEY`/`SUPABASE_SERVICE_KEY`가
+  다 채워져 있는지 확인 필요(`.env.example` 참고). 그래도 안 되면 예외를 임시로 로그에
+  노출해서 정확한 원인 재확인.
 
 ---
 
@@ -97,4 +130,5 @@
 - `feature/ui-redesign`, `feature/rag-coordinates` → `main`에 병합 및 푸시 완료
   (`10258ec`, `7b6d09c`, `0bbbec4`).
 - `feature/ui-ux-improvements`는 커밋된 변경사항이 없어 병합 대상 없음.
-- 이 문서에 정리된 항목들(1~5)은 아직 커밋 전 상태입니다.
+- 항목 1~5는 `16b2817`로 커밋되어 `feature/agent-performance` → `main`에 병합/푸시 완료.
+- 항목 6(컨텍스트 이어가기)은 아직 커밋 전 상태.

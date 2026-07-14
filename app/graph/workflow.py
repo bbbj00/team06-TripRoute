@@ -50,12 +50,15 @@ def run_trip_route_workflow(
     transport_mode: str = "대중교통",
     people_count: int = 2,
     previous_condition_summary: Dict[str, Any] | None = None,
+    previous_result: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """
     컴파일된 TripRoute 그래프를 실행하고 최종 응답 dict를 반환한다.
 
     previous_condition_summary(직전 턴의 condition_summary)를 넘기면 후속 대화
     맥락을 이어받아 파싱한다(parse_node -> parse_trip_request로 전달됨).
+    previous_result(직전 턴의 전체 결과)를 함께 넘기면, 기간 연장 후속 요청에서
+    route_planner_node가 기존 일정을 유지한 채 늘어난 날짜만 새로 채운다.
     """
     final_state = _TRIP_ROUTE_GRAPH.invoke(
         {
@@ -63,6 +66,7 @@ def run_trip_route_workflow(
             "transport_mode": transport_mode,
             "people_count": people_count,
             "previous_condition_summary": previous_condition_summary,
+            "previous_result": previous_result,
             "warnings": [],
             "react_trace": [],
         }

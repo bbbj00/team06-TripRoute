@@ -29,6 +29,7 @@ def create_trip_plan(request: TripPlanRequest) -> TripPlanResponse:
         transport_mode=request.transport_mode,
         people_count=request.people_count,
         previous_condition_summary=request.previous_condition_summary,
+        previous_result=request.previous_result,
     )
 
     return TripPlanResponse(

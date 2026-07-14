@@ -302,6 +302,7 @@ def do_logout(access_token_info, auth_state):
         [{"role": "assistant", "content": WELCOME_MESSAGE}],
         "",
         None,
+        None,
         "",
     )
 
@@ -320,7 +321,7 @@ def load_session(session_id, auth_browser_state):
     user_id = (auth_browser_state or {}).get("user_id")
 
     if not session_id or not user_id:
-        return (gr.update(),) * 4 + RESET_RESULT_TUPLE
+        return (gr.update(),) * 5 + RESET_RESULT_TUPLE
 
     try:
         messages = chat_store.get_session_messages(session_id, user_id)
@@ -354,7 +355,7 @@ def load_session(session_id, auth_browser_state):
         _build_result_sections(stored_result) if stored_result else RESET_RESULT_TUPLE
     )
 
-    return (history, "", previous_condition, session_id, *result_sections)
+    return (history, "", previous_condition, stored_result, session_id, *result_sections)
 
 
 # ---------------------------------------------------------
@@ -367,6 +368,7 @@ def chat(
     people_count: int | float,
     access_token_info,
     previous_condition,
+    previous_result,
     active_session_id,
     auth_state,
 ):
@@ -378,7 +380,7 @@ def chat(
     if not normalized_message:
         yield (
             history, "", *NO_RESULT_UPDATE,
-            previous_condition, active_session_id,
+            previous_condition, previous_result, active_session_id,
             access_token_info, auth_state,
         )
         return
@@ -395,7 +397,7 @@ def chat(
     ]
     yield (
         loading_history, "", *NO_RESULT_UPDATE,
-        previous_condition, active_session_id,
+        previous_condition, previous_result, active_session_id,
         access_token_info, auth_state,
     )
 
@@ -423,6 +425,7 @@ def chat(
             transport_mode=transport_mode,
             people_count=normalized_people_count,
             previous_condition_summary=previous_condition,
+            previous_result=previous_result,
         )
 
         result_sections = _build_result_sections(result)
@@ -465,7 +468,7 @@ def chat(
 
         yield (
             final_history, "", *result_sections,
-            new_condition, session_id,
+            new_condition, result, session_id,
             access_token_info, auth_state,
         )
 
@@ -474,7 +477,7 @@ def chat(
         final_history = history + [{"role": "assistant", "content": error_reply}]
         yield (
             final_history, "", *NO_RESULT_UPDATE,
-            previous_condition, session_id,
+            previous_condition, previous_result, session_id,
             access_token_info, auth_state,
         )
 
@@ -487,7 +490,7 @@ def chat(
         final_history = history + [{"role": "assistant", "content": error_reply}]
         yield (
             final_history, "", *NO_RESULT_UPDATE,
-            previous_condition, session_id,
+            previous_condition, previous_result, session_id,
             access_token_info, auth_state,
         )
 
@@ -510,6 +513,7 @@ def clear_chat(access_token_info):
         [],
         "",
         *RESET_RESULT_TUPLE,
+        None,
         None,
         new_session_id,
     )
@@ -1041,6 +1045,10 @@ with gr.Blocks(
     auth_browser_state = gr.BrowserState(dict(GUEST_BROWSER_STATE))
     access_token_state = gr.State(None)
     previous_condition_state = gr.State(None)
+    # 직전 턴의 전체 결과(daily_schedule/route_summary 포함) — 기간 연장 후속 요청에서
+    # 기존 일정을 유지한 채 늘어난 날짜만 새로 채우는 데 쓴다(previous_condition_state와
+    # 항상 같이 갱신됨).
+    previous_result_state = gr.State(None)
     active_session_id_state = gr.State(None)
     recent_sessions_state = gr.State([])
 
@@ -1199,6 +1207,7 @@ Solar API와 Agentic Workflow를 활용한 국내 여행 일정 생성 챗봇
         message_input,
         *result_tab_outputs,
         previous_condition_state,
+        previous_result_state,
         active_session_id_state,
         access_token_state,
         auth_browser_state,
@@ -1211,6 +1220,7 @@ Solar API와 Agentic Workflow를 활용한 국내 여행 일정 생성 챗봇
         people_count,
         access_token_state,
         previous_condition_state,
+        previous_result_state,
         active_session_id_state,
         auth_browser_state,
     ]
@@ -1234,6 +1244,7 @@ Solar API와 Agentic Workflow를 활용한 국내 여행 일정 생성 챗봇
         message_input,
         *result_tab_outputs,
         previous_condition_state,
+        previous_result_state,
         active_session_id_state,
     ]
 
@@ -1326,7 +1337,14 @@ Solar API와 Agentic Workflow를 활용한 국내 여행 일정 생성 챗봇
     logout_button.click(
         fn=do_logout,
         inputs=[access_token_state, auth_browser_state],
-        outputs=[*auth_outputs, chatbot, message_input, previous_condition_state, active_session_id_state],
+        outputs=[
+            *auth_outputs,
+            chatbot,
+            message_input,
+            previous_condition_state,
+            previous_result_state,
+            active_session_id_state,
+        ],
     )
 
     session_radio.change(
@@ -1336,6 +1354,7 @@ Solar API와 Agentic Workflow를 활용한 국내 여행 일정 생성 챗봇
             chatbot,
             message_input,
             previous_condition_state,
+            previous_result_state,
             active_session_id_state,
             *result_tab_outputs,
         ],

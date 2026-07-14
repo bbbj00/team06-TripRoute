@@ -3,7 +3,12 @@
 from typing import Any, Dict, List
 
 from app.agents.financial import build_financial_summary
-from app.agents.route_planner import build_route_plan
+from app.agents.route_planner import (
+    _parse_travel_days,
+    build_incremental_route_plan,
+    build_route_plan,
+    build_slot_replacement_route_plan,
+)
 from app.core.state import TripRouteState
 from app.services.solar import parse_trip_request
 from app.utils.cost_rules import build_cost_summary
@@ -38,6 +43,8 @@ def parse_node(state: TripRouteState) -> Dict[str, Any]:
         "prefer_local": parsed.get("prefer_local", False),
         "prefer_budget": parsed.get("prefer_budget", False),
         "is_peak_season": parsed.get("is_peak_season", False),
+        "target_day": parsed.get("target_day"),
+        "target_time_slot": parsed.get("target_time_slot"),
         "parser": parser,
         "warnings": list(parse_warnings),
         "react_trace": [
@@ -52,7 +59,14 @@ def parse_node(state: TripRouteState) -> Dict[str, Any]:
 
 
 def route_planner_node(state: TripRouteState) -> Dict[str, Any]:
-    """2단계: Route Planner Agent가 관광지 후보/연관 장소/동선/일정을 만든다."""
+    """
+    2단계: Route Planner Agent가 관광지 후보/연관 장소/동선/일정을 만든다.
+
+    같은 도시에 대한 기간 연장 후속 요청("3일로 늘려줘")이면 build_incremental_route_plan으로
+    기존 Day 일정은 유지한 채 늘어난 날짜만 새로 채우고, 슬롯 교체 후속 요청("2일차 점심만
+    바꿔줘")이면 build_slot_replacement_route_plan으로 그 슬롯 하나만 바꾼다. 둘 다 아니면
+    처음부터 다시 계획한다.
+    """
     parsed = {
         "city": state.get("city"),
         "season": state.get("season"),
@@ -65,11 +79,54 @@ def route_planner_node(state: TripRouteState) -> Dict[str, Any]:
         "is_peak_season": state.get("is_peak_season", False),
     }
 
-    route_plan = build_route_plan(
-        parsed=parsed,
-        transport_mode=state["transport_mode"],
-        people_count=state["people_count"],
+    previous_condition = state.get("previous_condition_summary")
+    previous_result = state.get("previous_result")
+
+    is_duration_extension = False
+    previous_days = 0
+
+    if previous_condition and previous_result:
+        previous_city = previous_condition.get("city")
+        previous_duration = str(previous_condition.get("duration") or "")
+        new_duration = str(state.get("duration") or "")
+
+        if previous_city and previous_city == state.get("city") and previous_duration:
+            previous_days = _parse_travel_days(previous_duration)
+            new_days = _parse_travel_days(new_duration) if new_duration else 0
+            is_duration_extension = new_days > previous_days
+
+    target_day = state.get("target_day")
+    target_time_slot = state.get("target_time_slot")
+    is_slot_replacement = (
+        not is_duration_extension
+        and previous_result is not None
+        and target_day is not None
+        and target_time_slot is not None
     )
+
+    if is_duration_extension:
+        route_plan = build_incremental_route_plan(
+            parsed=parsed,
+            transport_mode=state["transport_mode"],
+            people_count=state["people_count"],
+            previous_result=previous_result,
+            previous_days=previous_days,
+        )
+    elif is_slot_replacement:
+        route_plan = build_slot_replacement_route_plan(
+            parsed=parsed,
+            transport_mode=state["transport_mode"],
+            people_count=state["people_count"],
+            previous_result=previous_result,
+            target_day=target_day,
+            target_time_slot=target_time_slot,
+        )
+    else:
+        route_plan = build_route_plan(
+            parsed=parsed,
+            transport_mode=state["transport_mode"],
+            people_count=state["people_count"],
+        )
 
     return {
         "candidate_places": route_plan.get("candidate_places", []),

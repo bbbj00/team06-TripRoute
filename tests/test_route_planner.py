@@ -12,6 +12,8 @@ from app.agents.route_planner import (
     _search_lodging_place,
     _sort_by_prefer_local,
     _sort_by_rating_desc,
+    build_incremental_route_plan,
+    build_slot_replacement_route_plan,
 )
 
 
@@ -617,3 +619,268 @@ def test_search_lodging_place_picks_cheapest_when_prefer_budget(monkeypatch):
 
     # rating은 A가 더 높지만, prefer_budget이면 실제 요금이 더 저렴한 B를 골라야 함
     assert result["name"] == "B호텔"
+
+
+def _fake_previous_result():
+    """1박 2일(Day 1~2) 여행이 이미 확정된 previous_result를 흉내낸다."""
+    return {
+        "condition_summary": {"city": "강릉", "duration": "1박 2일", "data_source": "rag"},
+        "daily_schedule": [
+            {
+                "day": "Day 1", "time_slot": "오전", "place": "장소A", "place_name": "장소A",
+                "reason": "", "route_memo": "", "address": "", "image_url": "",
+                "latitude": 37.70, "longitude": 128.90, "content_id": "1",
+                "source": "rag", "category": "관광지", "content_type_id": None,
+            },
+            {
+                "day": "Day 1", "time_slot": "체크인", "place": "강릉호텔", "place_name": "강릉호텔",
+                "reason": "", "route_memo": "", "address": "", "image_url": "",
+                "latitude": 37.71, "longitude": 128.91, "content_id": "10",
+                "source": "rag", "category": "숙박", "content_type_id": "32",
+            },
+            {
+                "day": "Day 2", "time_slot": "오전", "place": "장소B", "place_name": "장소B",
+                "reason": "", "route_memo": "", "address": "", "image_url": "",
+                "latitude": 37.72, "longitude": 128.92, "content_id": "2",
+                "source": "rag", "category": "관광지", "content_type_id": None,
+            },
+        ],
+        "route_summary": [
+            {"from": "장소A", "to": "강릉호텔", "estimated_time": "약 5분", "estimated_time_minutes": 5},
+            {"from": "강릉호텔", "to": "장소B", "estimated_time": "약 10분", "estimated_time_minutes": 10},
+        ],
+    }
+
+
+def test_build_incremental_route_plan_appends_only_new_days(monkeypatch):
+    new_place = {
+        "name": "장소C", "title": "장소C", "content_id": "3", "address": "",
+        "longitude": 128.93, "latitude": 37.73, "image_url": "",
+        "reason": "", "source": "rag", "category": "관광지", "content_type_id": None,
+        "rating": None, "review_count": None,
+    }
+
+    monkeypatch.setattr(route_planner, "_search_rag_places", lambda **kwargs: [new_place])
+    monkeypatch.setattr(route_planner, "_fill_missing_place_details", lambda places: places)
+    monkeypatch.setattr(route_planner, "_search_restaurant_places", lambda **kwargs: [])
+    monkeypatch.setattr(
+        route_planner,
+        "_build_real_routes",
+        lambda selected_places, transport_mode: (
+            [
+                {
+                    "from": selected_places[i]["name"], "to": selected_places[i + 1]["name"],
+                    "estimated_time": "약 8분", "estimated_time_minutes": 8,
+                }
+                for i in range(len(selected_places) - 1)
+            ],
+            [],
+        ),
+    )
+
+    previous_result = _fake_previous_result()
+
+    result = build_incremental_route_plan(
+        parsed={
+            "city": "강릉",
+            "duration": "2박 3일",
+            "travel_style": ["바다"],
+            "prefer_local": False,
+            "schedule_intensity": "보통",
+        },
+        transport_mode="대중교통",
+        people_count=2,
+        previous_result=previous_result,
+        previous_days=2,
+    )
+
+    daily_schedule = result["daily_schedule"]
+    # 기존 Day 1/Day 2 엔트리는 그대로 앞부분에 남아있어야 한다
+    assert daily_schedule[:3] == previous_result["daily_schedule"]
+    # 늘어난 Day 3만 새로 추가됨
+    new_entries = daily_schedule[3:]
+    assert new_entries
+    assert all(entry["day"] == "Day 3" for entry in new_entries)
+    assert new_entries[0]["place_name"] == "장소C"
+    # 첫 새 장소는 전체 여행의 "첫 방문"이 아니라 기존 마지막 장소에서 이어진 것임을 안내해야 함
+    assert "장소B" in new_entries[0]["route_memo"]
+
+    # 기존 동선 뒤에 연결 구간 + 새 구간이 이어붙어야 한다
+    assert len(result["route_summary"]) == len(previous_result["route_summary"]) + 1
+
+    # Financial Agent가 전체 비용을 다시 계산할 수 있도록 옛 장소도 selected_places에 포함돼야 함
+    selected_names = {p["name"] for p in result["selected_places"]}
+    assert {"장소A", "강릉호텔", "장소B", "장소C"} <= selected_names
+
+    # 기존 숙박 정보(카테고리 포함)가 재구성되어야 늘어난 박수만큼 숙박비가 실측 유지됨
+    assert result["lodging_place"]["category"] == "숙박"
+    assert result["lodging_place"]["content_id"] == "10"
+
+
+def test_build_incremental_route_plan_excludes_places_already_in_schedule(monkeypatch):
+    duplicate_place = {
+        "name": "장소A", "title": "장소A", "content_id": "1", "address": "",
+        "longitude": 128.90, "latitude": 37.70, "image_url": "",
+        "reason": "", "source": "rag", "category": "관광지", "content_type_id": None,
+        "rating": None, "review_count": None,
+    }
+    fresh_place = {
+        "name": "장소D", "title": "장소D", "content_id": "4", "address": "",
+        "longitude": 128.94, "latitude": 37.74, "image_url": "",
+        "reason": "", "source": "rag", "category": "관광지", "content_type_id": None,
+        "rating": None, "review_count": None,
+    }
+
+    monkeypatch.setattr(
+        route_planner,
+        "_search_rag_places",
+        lambda **kwargs: [duplicate_place, fresh_place],
+    )
+    monkeypatch.setattr(route_planner, "_fill_missing_place_details", lambda places: places)
+    monkeypatch.setattr(route_planner, "_search_restaurant_places", lambda **kwargs: [])
+    monkeypatch.setattr(
+        route_planner,
+        "_build_real_routes",
+        lambda selected_places, transport_mode: ([], []),
+    )
+
+    result = build_incremental_route_plan(
+        parsed={
+            "city": "강릉",
+            "duration": "2박 3일",
+            "travel_style": ["바다"],
+            "prefer_local": False,
+            "schedule_intensity": "보통",
+        },
+        transport_mode="대중교통",
+        people_count=2,
+        previous_result=_fake_previous_result(),
+        previous_days=2,
+    )
+
+    new_place_names = {entry["place_name"] for entry in result["daily_schedule"][3:]}
+    assert "장소A" not in new_place_names
+    assert "장소D" in new_place_names
+
+
+def test_build_slot_replacement_route_plan_replaces_only_target_slot(monkeypatch):
+    new_place = {
+        "name": "장소E", "title": "장소E", "content_id": "5", "address": "",
+        "longitude": 128.93, "latitude": 37.73, "image_url": "",
+        "reason": "", "source": "rag", "category": "관광지", "content_type_id": None,
+        "rating": None, "review_count": None,
+    }
+
+    monkeypatch.setattr(route_planner, "_search_rag_places", lambda **kwargs: [new_place])
+    monkeypatch.setattr(route_planner, "_fill_missing_place_details", lambda places: places)
+    monkeypatch.setattr(
+        route_planner,
+        "_build_real_routes",
+        lambda selected_places, transport_mode: (
+            [
+                {
+                    "from": selected_places[i]["name"], "to": selected_places[i + 1]["name"],
+                    "estimated_time": "약 12분", "estimated_time_minutes": 12,
+                }
+                for i in range(len(selected_places) - 1)
+            ],
+            [],
+        ),
+    )
+
+    previous_result = _fake_previous_result()
+
+    result = build_slot_replacement_route_plan(
+        parsed={
+            "city": "강릉",
+            "duration": "1박 2일",
+            "travel_style": ["바다"],
+            "prefer_local": False,
+            "schedule_intensity": "보통",
+        },
+        transport_mode="대중교통",
+        people_count=2,
+        previous_result=previous_result,
+        target_day=2,
+        target_time_slot="오전",
+    )
+
+    daily_schedule = result["daily_schedule"]
+    # Day 1(오전/체크인)은 손대지 않고 그대로 남아있어야 한다
+    assert daily_schedule[:2] == previous_result["daily_schedule"][:2]
+    # Day 2 오전만 새 장소로 교체됨
+    assert daily_schedule[2]["place_name"] == "장소E"
+    assert daily_schedule[2]["day"] == "Day 2"
+    assert daily_schedule[2]["time_slot"] == "오전"
+    # 교체된 슬롯으로 들어오는 동선(강릉호텔 -> 장소E)만 갱신되고, 다른 구간은 그대로
+    assert result["route_summary"][0] == previous_result["route_summary"][0]
+    assert result["route_summary"][1]["to"] == "장소E"
+    assert len(result["route_summary"]) == len(previous_result["route_summary"])
+
+    selected_names = {p["name"] for p in result["selected_places"]}
+    assert selected_names == {"장소A", "강릉호텔", "장소E"}
+    assert any("교체했습니다" in w for w in result["warnings"])
+
+
+def test_build_slot_replacement_route_plan_excludes_duplicate_and_lodging_slot(monkeypatch):
+    duplicate_place = {
+        "name": "장소A", "title": "장소A", "content_id": "1", "address": "",
+        "longitude": 128.90, "latitude": 37.70, "image_url": "",
+        "reason": "", "source": "rag", "category": "관광지", "content_type_id": None,
+        "rating": None, "review_count": None,
+    }
+    fresh_place = {
+        "name": "장소F", "title": "장소F", "content_id": "6", "address": "",
+        "longitude": 128.93, "latitude": 37.73, "image_url": "",
+        "reason": "", "source": "rag", "category": "관광지", "content_type_id": None,
+        "rating": None, "review_count": None,
+    }
+
+    monkeypatch.setattr(
+        route_planner, "_search_rag_places", lambda **kwargs: [duplicate_place, fresh_place]
+    )
+    monkeypatch.setattr(route_planner, "_fill_missing_place_details", lambda places: places)
+    monkeypatch.setattr(
+        route_planner,
+        "_build_real_routes",
+        lambda selected_places, transport_mode: ([], []),
+    )
+
+    result = build_slot_replacement_route_plan(
+        parsed={
+            "city": "강릉",
+            "duration": "1박 2일",
+            "travel_style": ["바다"],
+            "prefer_local": False,
+            "schedule_intensity": "보통",
+        },
+        transport_mode="대중교통",
+        people_count=2,
+        previous_result=_fake_previous_result(),
+        target_day=2,
+        target_time_slot="오전",
+    )
+
+    # 이미 일정에 있는 "장소A"는 제외되고, 새 장소만 선택돼야 한다
+    assert result["daily_schedule"][2]["place_name"] == "장소F"
+
+
+def test_build_slot_replacement_route_plan_skips_lodging_checkin_slot():
+    result = build_slot_replacement_route_plan(
+        parsed={
+            "city": "강릉",
+            "duration": "1박 2일",
+            "travel_style": ["바다"],
+            "prefer_local": False,
+            "schedule_intensity": "보통",
+        },
+        transport_mode="대중교통",
+        people_count=2,
+        previous_result=_fake_previous_result(),
+        target_day=1,
+        target_time_slot="체크인",
+    )
+
+    # 숙박 슬롯 교체는 지원하지 않으므로 기존 일정을 그대로 유지해야 한다
+    assert result["daily_schedule"] == _fake_previous_result()["daily_schedule"]
+    assert any("체크인" in w for w in result["warnings"])

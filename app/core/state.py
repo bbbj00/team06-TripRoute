@@ -18,6 +18,10 @@ class TripRouteState(TypedDict, total=False):
 
     # 직전 턴의 condition_summary (후속 대화 맥락 이어가기용, 없으면 None)
     previous_condition_summary: Optional[Dict[str, Any]]
+    # 직전 턴의 전체 결과(daily_schedule/route_summary 포함, finalize_node의 result와 동일 형태).
+    # 기간 연장("3일로 늘려줘")/슬롯 교체("2일차 점심만 바꿔줘") 후속 요청에서 이미
+    # 확정된 일정을 그대로 이어붙이거나 일부만 바꾸는 데 쓴다.
+    previous_result: Optional[Dict[str, Any]]
 
     # Solar 파싱 결과 (parse_trip_request)
     city: str
@@ -30,6 +34,9 @@ class TripRouteState(TypedDict, total=False):
     is_peak_season: bool
     must_include_places: List[str]
     parser: str
+    # "2일차 점심만 바꿔줘" 같은 슬롯 교체 후속 요청에서만 채워짐(없으면 None)
+    target_day: Optional[int]
+    target_time_slot: Optional[str]
 
     # Route Planner 결과 (build_route_plan)
     candidate_places: List[Dict[str, Any]]

@@ -10,6 +10,7 @@ def run_triproute_react_loop(
     transport_mode: str = "대중교통",
     people_count: int = 2,
     previous_condition_summary: Dict[str, Any] | None = None,
+    previous_result: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """
     기존 호환성을 위한 wrapper.
@@ -21,4 +22,5 @@ def run_triproute_react_loop(
         transport_mode=transport_mode,
         people_count=people_count,
         previous_condition_summary=previous_condition_summary,
+        previous_result=previous_result,
     )

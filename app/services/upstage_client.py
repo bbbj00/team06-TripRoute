@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 from typing import Any, Dict, List
 
 from openai import OpenAI
@@ -129,6 +130,55 @@ def _detect_city(user_input: str) -> str | None:
     return None
 
 
+# 슬롯 교체 후속 요청("2일차 점심만 바꿔줘") 감지용 시간대 키워드. route_planner의
+# 실제 daily_schedule time_slot 값과 정확히 일치해야 한다(순서는 길게 겹치는 표현을
+# 먼저 매칭하도록 "늦은 오후"를 "오후"보다 앞에 둠).
+TIME_SLOT_KEYWORDS = ["늦은 오후", "오전", "점심", "오후", "저녁", "체크인"]
+
+
+def _detect_target_day(user_input: str) -> int | None:
+    """
+    "2일차", "Day 2", "둘째 날" 처럼 특정 하루를 콕 짚은 표현에서 며칠차인지 뽑아낸다.
+    Mock parser는 대화 맥락을 못 보므로, target_time_slot과 같이 있을 때만 의미가
+    있어(parse_user_input_mock에서 둘 다 있을 때만 채움) 오탐(단순히 "3일"이 기간
+    설명으로 쓰인 경우 등) 영향을 줄인다.
+    """
+    match = re.search(r"(\d+)\s*일\s*[차째]", user_input)
+    if match:
+        return int(match.group(1))
+
+    match = re.search(r"[Dd]ay\s*(\d+)", user_input)
+    if match:
+        return int(match.group(1))
+
+    return None
+
+
+def _detect_target_time_slot(user_input: str) -> str | None:
+    for slot in TIME_SLOT_KEYWORDS:
+        if slot in user_input:
+            return slot
+
+    return None
+
+
+VALID_TIME_SLOTS = set(TIME_SLOT_KEYWORDS)
+
+
+def _normalize_target_day(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)) and int(value) > 0:
+        return int(value)
+    return None
+
+
+def _normalize_target_time_slot(value: Any) -> str | None:
+    if isinstance(value, str) and value in VALID_TIME_SLOTS:
+        return value
+    return None
+
+
 def _client() -> OpenAI:
     """
     Upstage OpenAI-compatible API 클라이언트를 생성합니다.
@@ -196,12 +246,22 @@ def parse_user_input_mock(user_input: str) -> dict[str, Any]:
     user_input을 반영합니다.
     """
 
+    target_day = _detect_target_day(user_input)
+    target_time_slot = _detect_target_time_slot(user_input)
+    # 둘 다 있을 때만 "특정 일차의 특정 시간대 교체" 신호로 본다 — 하나만 있으면
+    # (예: "3일 여행"의 "3일"엔 시간대 언급이 없음) 기간 설명과 헷갈릴 위험이 크다.
+    if target_day is None or target_time_slot is None:
+        target_day = None
+        target_time_slot = None
+
     return {
         **DEFAULT_PARSE_RESULT,
         "city": _detect_city(user_input) or DEFAULT_PARSE_RESULT["city"],
         "prefer_local": _detect_prefer_local(user_input),
         "prefer_budget": _detect_prefer_budget(user_input),
         "is_peak_season": _detect_peak_season(user_input),
+        "target_day": target_day,
+        "target_time_slot": target_time_slot,
         "_parser": "mock",
     }
 
@@ -288,6 +348,8 @@ def _normalize_parse_result(
         "prefer_local": bool(data.get("prefer_local", False)),
         "prefer_budget": bool(data.get("prefer_budget", False)),
         "is_peak_season": bool(data.get("is_peak_season", False)),
+        "target_day": _normalize_target_day(data.get("target_day")),
+        "target_time_slot": _normalize_target_time_slot(data.get("target_time_slot")),
         "_parser": "solar",
     }
 
