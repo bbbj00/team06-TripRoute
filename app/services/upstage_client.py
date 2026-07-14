@@ -60,6 +60,42 @@ def _detect_prefer_local(user_input: str) -> bool:
     return any(keyword in user_input for keyword in PREFER_LOCAL_KEYWORDS)
 
 
+# 프롬프트 인젝션 의심 패턴(input 가드레일). 알려진 대표 문구만 걸러내는 근사치라
+# 완벽하지 않지만(새로운 우회 표현엔 뚫릴 수 있음), 걸리면 아예 Solar 호출을 건너뛰고
+# Mock parser로 처리해서 실제 LLM에 의심스러운 입력을 노출시키지 않는다(deny-by-default).
+# COORDINATOR_PARSE_SYSTEM_PROMPT의 보안 규칙 문구가 이 탐지를 우회한 입력에 대한
+# 2차 방어선 역할을 한다.
+PROMPT_INJECTION_KEYWORDS = [
+    "이전 지시 무시",
+    "위 지시 무시",
+    "지시를 무시해",
+    "명령을 무시해",
+    "규칙을 무시해",
+    "시스템 프롬프트",
+    "시스템 메시지를 알려",
+    "너는 이제부터",
+    "지금부터 너는",
+    "역할을 무시하고",
+    "탈옥",
+    "ignore previous instructions",
+    "ignore all previous instructions",
+    "ignore the above",
+    "disregard the above",
+    "disregard previous instructions",
+    "reveal your system prompt",
+    "reveal your instructions",
+    "print your prompt",
+    "you are now",
+    "developer mode",
+    "jailbreak",
+]
+
+
+def _detect_prompt_injection(user_input: str) -> bool:
+    lowered = user_input.lower()
+    return any(keyword.lower() in lowered for keyword in PROMPT_INJECTION_KEYWORDS)
+
+
 # 부정 문맥 감지용 키워드 (Mock parser fallback용). "돈 아끼지 않고", "여름은
 # 피하고"처럼 키워드 바로 앞/뒤에 부정 표현이 붙어 뜻이 반전되는 흔한 패턴만
 # 걸러내는 간단한 근사치이며, 완전한 부정 감지를 보장하지는 않는다.
@@ -632,6 +668,13 @@ def parse_trip_request(
     """
     Solar 입력 파싱을 시도하고 실패하면 Mock parser를 사용합니다.
     """
+
+    if _detect_prompt_injection(user_input):
+        # 의심되는 입력은 Solar(실제 LLM)에 아예 보내지 않고 Mock parser로만 처리한다.
+        fallback = parse_user_input_mock(user_input)
+        return fallback, [
+            "입력에서 프롬프트 인젝션 의심 패턴이 감지되어 안전한 파서로 처리했습니다."
+        ]
 
     try:
         parsed = parse_user_input_with_solar(user_input, previous_condition_summary)

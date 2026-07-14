@@ -38,6 +38,18 @@ LODGING_NAME_KEYWORDS = ("카라반", "글램핑", "캠핑장", "캠핑리조트
 def _is_lodging_by_name(name: str) -> bool:
     return any(keyword in name for keyword in LODGING_NAME_KEYWORDS)
 
+
+# 공항은 TourAPI에 "관광지"/"문화시설"로 등록돼 있어서(전망대·홍보관 등이 있다는 이유로)
+# 취향 유사도나 리뷰수만 보면 순위가 높게 나오지만, 실제 여행 일정에서 "방문할 관광지"로
+# 추천하기엔 부적절하다(그냥 오가는 경유지일 뿐). 이름에 "공항"이 들어가면 일반 후보군/
+# 연관 장소 추천에서 제외한다.
+NON_DESTINATION_NAME_KEYWORDS = ("공항",)
+
+
+def _is_non_destination_by_name(name: str) -> bool:
+    return any(keyword in name for keyword in NON_DESTINATION_NAME_KEYWORDS)
+
+
 RESTAURANT_CATEGORY = "음식점"
 MEAL_TIME_SLOTS = {"점심", "저녁"}
 
@@ -302,19 +314,34 @@ def _normalize_rag_place(item: Dict[str, Any], travel_style: List[str]) -> Place
     }
 
 
+# prefer_local일 때 "숨은 맛집"으로 인정할 평점 기준선. 이 미만이면 리뷰가 적어도
+# "로컬 맛집"이 아니라 그냥 관리가 안 되거나 평판이 안 좋아서 리뷰가 적은 곳일 수 있다.
+HIDDEN_GEM_MIN_RATING = 4.0
+
+
 def _sort_by_prefer_local(places: List[Place], prefer_local: bool) -> List[Place]:
     """
-    prefer_local이 켜져 있으면 review_count가 적은(덜 알려진) 곳을 우선하고,
-    아니면 review_count가 많은(유명한) 곳을 우선한다. review_count가 없는(Google Places
-    매칭 실패) 곳은 정보 없음으로 취급해 배제하지 않고 뒤쪽에 배치한다.
+    prefer_local이 켜져 있으면 "평점 HIDDEN_GEM_MIN_RATING 이상 + 리뷰 수 적음"(숨은 맛집)
+    곳을 최우선으로 하고, 그 다음은 나머지를 review_count 적은 순으로 둔다. 그냥
+    review_count만 오름차순으로 보면 평점도 낮은(관리가 안 되거나 평판이 나빠서 리뷰가
+    적을 뿐인) 곳까지 "로컬 맛집"으로 뽑히는 문제가 있어서, 평점을 먼저 걸러 판단한다.
+
+    prefer_local이 꺼져 있으면 기존과 동일하게 review_count가 많은(유명한) 곳을 우선한다.
+    review_count가 없는(Google Places 매칭 실패) 곳은 정보 없음으로 취급해 배제하지
+    않고 맨 뒤에 배치한다.
     """
 
     def sort_key(place: Place) -> Tuple[int, int]:
         review_count = place.get("review_count")
         if review_count is None:
-            return (1, 0)
+            return (2, 0)
 
-        return (0, review_count if prefer_local else -review_count)
+        if not prefer_local:
+            return (0, -review_count)
+
+        rating = _to_float(place.get("rating"))
+        is_hidden_gem = rating is not None and rating >= HIDDEN_GEM_MIN_RATING
+        return (0 if is_hidden_gem else 1, review_count)
 
     return sorted(places, key=sort_key)
 
@@ -415,9 +442,14 @@ def _search_rag_places(
     taste_text = _build_taste_text(travel_style, prefer_local)
 
     try:
+        # 숙박/음식점/공항은 아래에서 걸러내는데, "로컬 맛집"처럼 travel_style이 음식
+        # 위주면 유사도 검색 결과 자체가 음식점(+숙박)이 절반 이상을 차지하는 경우가
+        # 실측으로 확인됨(예: match_count 40개 중 음식점 20개, 숙박 5개). max_places의
+        # 3배만 가져오면 필터링 후 관광지 슬롯을 채울 곳이 모자랄 수 있어 여유 있게 6배
+        # 가져온다(Supabase pgvector 조회 1회라 비용 부담은 거의 없음).
         results = retrieve_places_by_taste(
             taste_text,
-            match_count=max(max_places * 3, 10),
+            match_count=max(max_places * 6, 20),
             city=city,
         )
     except Exception:
@@ -433,12 +465,24 @@ def _search_rag_places(
     # 하나만 골라서 체크인 시점에 넣으므로, 여기 섞여 들어오면 호텔이 오전/오후 같은
     # 일반 활동 슬롯에 중복으로 배정되는 문제가 생긴다. category만으로는 카라반/글램핑/
     # 캠핑장처럼 TourAPI가 "레포츠"로 잘못 등록해둔 숙박까지는 못 걸러서 이름도 같이 본다.
+    # 음식점도 마찬가지 이유로 제외한다 — 점심/저녁은 _search_restaurant_places가 따로
+    # 채우므로, travel_style에 "로컬 맛집"처럼 음식 관련 표현이 있으면 여기서도 취향
+    # 유사도로 음식점이 잔뜩 뽑혀서 _search_restaurant_places 결과와 대거 겹치고, 그
+    # 중복이 뒤에서 dedup되며 오전/오후 관광지 슬롯을 채울 곳이 모자라지는 문제가 있었다.
     places = [
         place for place in places
-        if place.get("category") != "숙박" and not _is_lodging_by_name(_get_place_name(place))
+        if place.get("category") != "숙박"
+        and place.get("category") != RESTAURANT_CATEGORY
+        and not _is_lodging_by_name(_get_place_name(place))
+        and not _is_non_destination_by_name(_get_place_name(place))
     ]
 
-    return _sort_by_prefer_local(places, prefer_local)
+    # 위에서 match_count를 넉넉히(6배) 받아오지만, 이 함수가 반환하는 후보 전부가
+    # 뒤에서 _fill_missing_place_details로 TourAPI 상세조회(좌표 보완)를 거친다 —
+    # 필터링 후 남은 전량을 그대로 반환하면 후보가 많을수록 상세조회 호출 수·응답
+    # 시간이 그만큼 늘어난다. max_places의 2배로만 잘라서, 필터링으로 인한 부족은
+    # 보완하되 상세조회 부담은 기존 수준(3배 요청 시절)과 비슷하게 유지한다.
+    return _sort_by_prefer_local(places, prefer_local)[: max_places * 2]
 
 
 def _sort_by_rating_desc(places: List[Place]) -> List[Place]:
@@ -779,10 +823,13 @@ def _search_real_places(
             for item in items
         ]
     )
-    # _search_rag_places와 동일한 이유로 숙박은 일반 후보에서 제외한다.
+    # _search_rag_places와 동일한 이유로 숙박/음식점/공항은 일반 후보에서 제외한다.
     return [
         place for place in places
-        if place.get("category") != "숙박" and not _is_lodging_by_name(_get_place_name(place))
+        if place.get("category") != "숙박"
+        and place.get("category") != RESTAURANT_CATEGORY
+        and not _is_lodging_by_name(_get_place_name(place))
+        and not _is_non_destination_by_name(_get_place_name(place))
     ]
 
 
@@ -895,6 +942,10 @@ def _search_course_related_places(
         for i in nearby_indexes:
             if len(related_places) >= max_related_places:
                 break
+
+            sub_name = str(sub_items[i].get("subname") or "")
+            if _is_non_destination_by_name(sub_name):
+                continue
 
             related_places.append(_normalize_course_sub_place(sub_items[i], base_name))
 

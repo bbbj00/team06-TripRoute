@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import sys
 import time
 from pathlib import Path
@@ -371,11 +372,23 @@ def chat(
 
     normalized_message = (message or "").strip()
 
+    # "새 대화" 버튼(clear_chat)이 메시지를 보내기 전에 이미 제목 없는 세션을 미리
+    # 만들어두므로, session_id의 신규 여부만으로는 "이 세션의 첫 메시지인지"를 알 수
+    # 없다 — 화면에 표시된 이전 대화 중 사용자 메시지가 하나도 없으면 첫 메시지로 본다.
+    is_first_message_in_session = not any(
+        turn.get("role") == "user" for turn in history
+    )
+
+    # 사이드바 "최근 대화" 갱신 정보(session_radio, recent_sessions_state, no_session_msg) —
+    # 새 세션이 생기거나 제목이 바뀌기 전까지는 그대로 두고(gr.update()), 실제로 목록이
+    # 바뀌는 시점에만 새로 계산해서 덮어쓴다.
+    sidebar_update = (gr.update(), gr.update(), gr.update())
+
     if not normalized_message:
         yield (
             history, "", *NO_RESULT_UPDATE,
             previous_condition, previous_result, active_session_id,
-            access_token_info, auth_state,
+            access_token_info, auth_state, *sidebar_update,
         )
         return
 
@@ -393,11 +406,10 @@ def chat(
     yield (
         loading_history, "", *NO_RESULT_UPDATE,
         previous_condition, previous_result, active_session_id,
-        access_token_info, auth_state,
+        access_token_info, auth_state, *sidebar_update,
     )
 
     session_id = active_session_id
-    is_new_session = session_id is None
 
     if is_logged_in:
         try:
@@ -407,6 +419,15 @@ def chat(
                     title=normalized_message[:40],
                 )
                 session_id = session_row["id"]
+                # 대화를 만들자마자(첫 응답이 나오기 한참 전이라도) 사이드바 "최근 대화"
+                # 목록에 바로 보이도록 여기서 즉시 갱신한다 — 끝까지 기다렸다가 갱신하면
+                # 생성 직후엔 목록에 안 보이는 문제가 있었음.
+                sessions = chat_store.list_recent_sessions(access_token_info["user_id"])
+                sidebar_update = (
+                    gr.update(choices=_session_choices(sessions), visible=True),
+                    sessions,
+                    gr.update(visible=False),
+                )
             chat_store.append_message(session_id, "user", normalized_message)
         except Exception:
             pass
@@ -432,7 +453,7 @@ def chat(
             yield (
                 progress_history, "", *NO_RESULT_UPDATE,
                 previous_condition, previous_result, active_session_id,
-                access_token_info, auth_state,
+                access_token_info, auth_state, *sidebar_update,
             )
             if maybe_result is not None:
                 result = maybe_result
@@ -457,29 +478,39 @@ def chat(
         # 3) 자연어 설명 문단만 Solar stream=True로 타이핑 효과를 내며 이어붙인다.
         # daily_schedule/cost_summary 같은 계산된 수치 데이터는 이미 위에서 확정된
         # result_sections로 한 번에 표시되고, 스트리밍 대상이 아니다.
+        #
+        # output 가드레일: chatbot 말풍선은 HTML로 그대로 렌더링되므로(header가 이미
+        # <b>/<br> 태그를 raw HTML로 씀), 사용자 입력 문구가 Solar 응답에 일부라도
+        # 그대로 echo되면 XSS로 이어질 수 있다. streamed_text(LLM이 생성한 부분)만
+        # html.escape()로 이스케이프하고, 우리가 직접 쓰는 고정 문구(header, 아래
+        # 실패 시 fallback 문구)의 의도된 태그는 그대로 유지한다.
         streamed_text = ""
+        used_fallback_reason = False
         try:
             for delta in stream_trip_summary(
                 new_condition, result["daily_schedule"], result["cost_summary"]
             ):
                 streamed_text += delta
                 partial_history = history + [
-                    {"role": "assistant", "content": header + streamed_text}
+                    {"role": "assistant", "content": header + html.escape(streamed_text)}
                 ]
                 yield (
                     partial_history, "", *result_sections,
                     new_condition, result, session_id,
-                    access_token_info, auth_state,
+                    access_token_info, auth_state, *sidebar_update,
                 )
         except Exception:
             # 설명 문장 생성 실패는 계획 자체의 실패가 아니므로, 고정 문구로 대체하고
             # 계속 진행한다(결과 패널은 이미 정상적으로 채워져 있음).
+            used_fallback_reason = True
             streamed_text = (
                 "위 조건으로 일정, 동선, 비용을 최적화했습니다. "
                 "아래 <b>결과 패널</b>에서 상세 내용을 확인해 주세요!"
             )
 
-        reply = header + streamed_text
+        reply = header + (
+            streamed_text if used_fallback_reason else html.escape(streamed_text)
+        )
         final_history = history + [{"role": "assistant", "content": reply}]
 
         if is_logged_in and session_id is not None:
@@ -489,17 +520,26 @@ def chat(
                 # 결과 패널(일정/동선/비용)도 통째로 저장해둔다 — "최근 대화"에서 이
                 # 세션을 다시 열었을 때 대화 내용뿐 아니라 그때 만든 일정도 같이 복원됨.
                 chat_store.update_session_result(session_id, result)
-                if is_new_session:
-                    # 첫 메시지 그대로 자르는 대신 도시·기간으로 요약된 제목을 붙인다 —
+                if is_first_message_in_session:
+                    # 첫 메시지 그대로 자르는 대신(또는 "새 대화" 버튼으로 미리 만들어져
+                    # 제목이 아예 없는 세션이든) 도시·기간으로 요약된 제목을 붙인다 —
                     # "최근 대화" 목록에서 어떤 여행인지 한눈에 알 수 있게.
                     chat_store.update_session_title(session_id, f"{city} {duration} 여행")
+                    # 사이드바에 이미 임시 제목(또는 "새 대화")으로 보이던 항목을
+                    # 최종 제목으로 다시 갱신한다.
+                    sessions = chat_store.list_recent_sessions(access_token_info["user_id"])
+                    sidebar_update = (
+                        gr.update(choices=_session_choices(sessions), visible=True),
+                        sessions,
+                        gr.update(visible=False),
+                    )
             except Exception:
                 pass
 
         yield (
             final_history, "", *result_sections,
             new_condition, result, session_id,
-            access_token_info, auth_state,
+            access_token_info, auth_state, *sidebar_update,
         )
 
     except ValueError as error:
@@ -508,7 +548,7 @@ def chat(
         yield (
             final_history, "", *NO_RESULT_UPDATE,
             previous_condition, previous_result, session_id,
-            access_token_info, auth_state,
+            access_token_info, auth_state, *sidebar_update,
         )
 
     except Exception as error:
@@ -521,7 +561,7 @@ def chat(
         yield (
             final_history, "", *NO_RESULT_UPDATE,
             previous_condition, previous_result, session_id,
-            access_token_info, auth_state,
+            access_token_info, auth_state, *sidebar_update,
         )
 
 
@@ -531,11 +571,21 @@ def chat(
 def clear_chat(access_token_info):
     is_logged_in = bool(access_token_info and access_token_info.get("access_token"))
     new_session_id = None
+    sidebar_update = (gr.update(), gr.update(), gr.update())
 
     if is_logged_in:
         try:
             session_row = chat_store.create_session(access_token_info["user_id"])
             new_session_id = session_row["id"]
+            # 여기서 만든 세션은 아직 제목/메시지가 없어 "새 대화"로만 보이지만(첫
+            # 메시지를 보내면 chat()에서 도시·기간 제목으로 갱신됨), 최소한 사이드바
+            # 목록에는 클릭 즉시 나타나야 한다.
+            sessions = chat_store.list_recent_sessions(access_token_info["user_id"])
+            sidebar_update = (
+                gr.update(choices=_session_choices(sessions), visible=True),
+                sessions,
+                gr.update(visible=False),
+            )
         except Exception:
             new_session_id = None
 
@@ -546,6 +596,7 @@ def clear_chat(access_token_info):
         None,
         None,
         new_session_id,
+        *sidebar_update,
     )
 
 
@@ -1241,6 +1292,9 @@ Solar API와 Agentic Workflow를 활용한 국내 여행 일정 생성 챗봇
         active_session_id_state,
         access_token_state,
         auth_browser_state,
+        session_radio,
+        recent_sessions_state,
+        no_session_msg,
     ]
 
     chat_inputs = [
@@ -1276,6 +1330,9 @@ Solar API와 Agentic Workflow를 활용한 국내 여행 일정 생성 챗봇
         previous_condition_state,
         previous_result_state,
         active_session_id_state,
+        session_radio,
+        recent_sessions_state,
+        no_session_msg,
     ]
 
     clear_button.click(
