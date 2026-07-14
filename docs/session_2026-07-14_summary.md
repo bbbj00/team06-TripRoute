@@ -124,11 +124,80 @@
   다 채워져 있는지 확인 필요(`.env.example` 참고). 그래도 안 되면 예외를 임시로 로그에
   노출해서 정확한 원인 재확인.
 
+## 8. Supabase 기반 LangGraph Checkpoint 저장 연결
+
+- `app/graph/checkpointer.py`(신규): `SUPABASE_DB_URL`(REST API용 `SUPABASE_URL`과 별개,
+  Postgres 직접 연결 문자열)로 `PostgresSaver` 생성, `graph.compile(checkpointer=...)`로
+  연결. `thread_id`(대화 세션 id)를 `coordinator.py`/`react_loop.py`/`main.py`/
+  `gradio_app.py`까지 배선.
+- **연결 삽질**: pooler 호스트가 순간적으로 DNS 조회 실패하는 걸 실제로 겪어서 재시도
+  로직(3회, 2초 간격) 추가. 반복된 인증 실패로 Supabase pooler의 circuit breaker에
+  잠긴 적도 있었음 — 비밀번호 리셋 후 해결.
+- **실전에서 잡은 버그**: Supabase pooler(6543, transaction 모드)가 psycopg의 prepared
+  statement를 지원 안 해서 실제 그래프 실행 시 `DuplicatePreparedStatement` 에러 발생 —
+  `prepare_threshold=None`으로 해결. `MemorySaver`(가짜)로만 테스트했으면 못 잡았을 문제.
+- 연결 실패 시(설정 안 함/네트워크 문제) 경고만 남기고 체크포인트 없이 기존과 동일하게
+  동작(graceful fallback). 실제 Supabase에 체크포인트 행이 쌓이는 것까지 라이브 검증 완료.
+
+## 9. Langfuse 트레이싱 연동
+
+- `app/services/upstage_client.py`: `openai.OpenAI` → `langfuse.openai.OpenAI` 드롭인
+  교체 한 줄로 모든 Solar/임베딩 호출이 자동 트레이싱되게 함.
+- `app/graph/nodes.py`(4개 노드) + `app/graph/workflow.py`(`run_trip_route_workflow`)에
+  `@observe()` 추가 — "요청 하나 = 트레이스 하나"로 묶어서 단계별 소요시간이 보이게 함.
+- 실제 Langfuse API로 트레이스 구조까지 직접 조회해서 검증:
+  `trip_plan_workflow` → `parse_trip_request`(+ Solar generation) / `route_planner`
+  (+ 임베딩) / `financial`(+ usefee 파싱 generation) / `finalize`로 정상 중첩 확인.
+- `.env`의 Langfuse 키는 이미 있던 걸 그대로 사용(새 계정 불필요), `auth_check()` 통과.
+
+## 10. UX: 단계별 진행 메시지 + 최종 요약 스트리밍
+
+- `app/graph/workflow.py`: `stream_trip_route_workflow`(신규) — `graph.stream(stream_mode=
+  "updates")`로 노드가 끝날 때마다 (진행 메시지, 결과 or None) yield. `coordinator.py`/
+  `react_loop.py`에 동일한 스트리밍 wrapper 추가.
+- `app/services/upstage_client.py`: `stream_trip_summary`(신규) — 완성된 일정을 Solar
+  `stream=True`로 자연어 요약 문단 생성, 조각(delta) 단위로 yield.
+- `ui/gradio_app.py`의 `chat()`을 재작성: 로딩 → 4단계 진행 메시지("여행 조건을 분석하고
+  있어요...", "관광지와 동선을 찾고 있어요...", "예상 비용을 계산하고 있어요...", "결과를
+  정리하고 있어요...") → 결과 패널 확정 후 요약 문단 타이핑 효과 스트리밍 순으로 표시.
+  일정/동선/비용 같은 계산된 수치는 스트리밍 대상이 아니라 확정 시 한 번에 표시(요구사항대로).
+- 백그라운드 에이전트로 `chat()` 제너레이터 전체(108회 yield)와 서버 부팅을 직접 구동해서
+  검증 완료 — 실제 결과 패널은 약 9.6초 시점에 이미 확정되고, 이후 몇 초는 챗봇 말풍선의
+  설명 문단이 타이핑되는 구간(체감 속도에 영향, 결과 확인 자체엔 지장 없음).
+
+## 11. 백필 재실행 및 버그 수정
+
+- 중단됐던 백필 4종 재실행: 카테고리 1건, 좌표 29건, 평점 87건, 축제 개최기간 76건.
+- 좌표 백필 3건 실패 발견 → 원인 조사 중 버그 2개 확인:
+  - `backfill_coordinates`가 `detail.get("title", 대체값)` 문법을 잘못 씀(키가 있는데
+    값이 `None`이면 대체값으로 안 떨어짐) → `.get(key) or 대체값`으로 수정
+  - `get_places_missing_coordinates`가 애초에 `title`/`address` 컬럼을 안 가져와서
+    대체값 자체가 없었음 → 컬럼 추가
+  - 수정 후 재실행, 3건 전부 해결(좌표 미해결 0건)
+- TourAPI가 완전히 빈 응답(아이템 0개)을 주는 폐업/삭제 콘텐츠 3건(라세느 롯데호텔서울,
+  제주한잔 우리술 페스티벌, 전주페스타)은 `places` 테이블에서 삭제.
+
+## 12. CI 실패로 어제부터 배포가 안 되고 있던 문제 발견 및 수정
+
+- 서버 배포 요청 중 GitHub Actions 확인 → **`16b2817`(어제 세션 마지막 커밋)부터 오늘 모든
+  커밋까지 CI가 계속 실패**하고 있었고, CD는 매번 자동으로 스킵되고 있었음을 발견. 마지막
+  성공 배포는 `e86702d`(7/13 04:05) — 그동안의 작업이 전부 서버에 반영 안 된 상태였음.
+- 원인: ruff lint 오류 5건(미사용 변수/import, 대부분 오늘 이전부터 있던 것) — CI의
+  "Run Ruff lint" 단계에서 실패해서 뒤 단계(문법 체크/테스트)는 실행조차 안 되고 있었음.
+- `app/agents/route_planner.py`/`app/rag/vector_store.py`/`ui/gradio_app.py`에서 미사용
+  변수·import 제거. 로컬에서 `uv lock --check`/ruff/`compileall`/pytest 전부 통과 확인
+  후 푸시 → CI 통과 → CD 자동 트리거되어 실제 배포 진행.
+
 ---
 
 ## 참고: 오늘 커밋/브랜치 정리
 - `feature/ui-redesign`, `feature/rag-coordinates` → `main`에 병합 및 푸시 완료
   (`10258ec`, `7b6d09c`, `0bbbec4`).
 - `feature/ui-ux-improvements`는 커밋된 변경사항이 없어 병합 대상 없음.
-- 항목 1~5는 `16b2817`로 커밋되어 `feature/agent-performance` → `main`에 병합/푸시 완료.
-- 항목 6(컨텍스트 이어가기)은 아직 커밋 전 상태.
+- 항목 1~5는 `16b2817`, 항목 6(컨텍스트 이어가기)은 `1009afc`로 각각
+  `feature/agent-performance`에서 `main`에 병합/푸시 완료.
+- 항목 8(체크포인트) + 백필 버그 수정은 `feature/langgraph-checkpoint`에서 `main`으로 병합.
+- 항목 9(Langfuse)는 `feature/langfuse`, 항목 10(스트리밍)은 `feature/streaming-ux`에서
+  각각 `main`으로 병합.
+- 항목 12(CI 수정)는 `main`에 직접 커밋 후 푸시.
+- 배포 서버: `http://34.50.22.20:8000/` (GCE VM, GHCR 이미지 기반 Docker Compose).
