@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Tuple
 
 from app.rag.retriever import retrieve_places_by_taste
-from app.rag.vector_store import content_type_id_to_category
+from app.rag.vector_store import content_type_id_to_category, is_in_expected_region
 from app.services.kakao_mobility import get_route, summarize_route
 from app.services.supabase_client import get_course_content_ids
 from app.services.tour_api import (
@@ -50,8 +50,42 @@ def _is_non_destination_by_name(name: str) -> bool:
     return any(keyword in name for keyword in NON_DESTINATION_NAME_KEYWORDS)
 
 
+# TourAPI 여행코스(contentTypeId=25) 하위 장소 목록에는 실제 등록된 장소가 아니라
+# "점심식사(용산회 식당)"처럼 코스 중 식사 시간을 나타내는 안내문 성격의 항목이 섞여
+# 있는 경우가 실제로 있다(경주 코스에서 확인됨). 이런 항목은 content_id가 있어도
+# 독립된 관광지가 아니라서 detailCommon2로 category를 못 채우고 None으로 남는데,
+# 기존 숙박/음식점/쇼핑 제외 필터는 전부 "!= 카테고리" 비교라 None은 그대로 통과해서
+# 오전 같은 일반 시간대에 식사 안내문이 관광지인 것처럼 배정되는 문제가 있었다.
+MEAL_PLACEHOLDER_NAME_KEYWORDS = ("점심식사", "저녁식사", "아침식사", "조식", "중식", "석식")
+
+
+def _is_meal_placeholder_by_name(name: str) -> bool:
+    return any(keyword in name for keyword in MEAL_PLACEHOLDER_NAME_KEYWORDS)
+
+
 RESTAURANT_CATEGORY = "음식점"
+RESTAURANT_CONTENT_TYPE_ID = "39"
 MEAL_TIME_SLOTS = {"점심", "저녁"}
+
+# TourAPI의 "쇼핑"(38) 카테고리에는 재래시장("강릉 중앙시장")뿐 아니라 개별 브랜드
+# 매장/아울렛("게스 제주점", "신세계사이먼프리미엄아울렛 OO점", "내셔널지오그래픽 제주점" 등)
+# 까지 전부 섞여 있다. 후자는 사용자가 쇼핑을 요청하지 않는 한 관광 일정에 들어갈 이유가
+# 없고(같은 브랜드가 지점만 다르게 여러 건 등록돼 후보를 도배하기도 함), 리뷰수가 높은
+# 경우도 많아 일반 관광지 후보군에 자주 섞여 들어온다. 숙박/음식점과 같은 이유로 제외한다.
+SHOPPING_CATEGORY = "쇼핑"
+
+# 다만 재래시장은 쇼핑 카테고리로 등록돼 있어도 실제로는 관광객이 즐겨 찾는 명소(먹거리·
+# 구경거리 위주)라 아울렛/브랜드 매장과 동일하게 취급하면 안 된다. 이름에 "시장"이 들어가면
+# category가 "쇼핑"이어도 제외 대상에서 뺀다.
+MARKET_NAME_KEYWORDS = ("시장",)
+
+
+def _is_market_by_name(name: str) -> bool:
+    return any(keyword in name for keyword in MARKET_NAME_KEYWORDS)
+
+
+def _is_excluded_shopping(place: Place) -> bool:
+    return place.get("category") == SHOPPING_CATEGORY and not _is_market_by_name(_get_place_name(place))
 
 EARTH_RADIUS_KM = 6371.0
 # RAG는 취향 유사도만 보고 거리는 전혀 고려하지 않아서, 취향 1등이 해변이고 2등이 반대편
@@ -205,6 +239,38 @@ def _format_place_signal(rating: Any, review_count: Any) -> str:
 # 이 리뷰수 이상이면 추천 이유에 "인기"를 붙인다 (임의 기준 — 별도 통계적 근거는 없음)
 POPULAR_REVIEW_COUNT_THRESHOLD = 300
 
+OVERVIEW_SNIPPET_MAX_LENGTH = 60
+
+
+def _extract_overview_snippet(overview: str | None, max_length: int = OVERVIEW_SNIPPET_MAX_LENGTH) -> str:
+    """
+    TourAPI overview(개요) 원문에서 추천 이유에 붙일 짧은 설명 한 조각을 뽑아낸다.
+
+    overview는 보통 "(출처: OO)" 같은 출처 표기나 개행으로 문단이 나뉜 긴 소개문이라,
+    그대로 붙이면 너무 길고 장황해진다. 첫 문장(또는 max_length자)만 잘라 쓴다.
+    """
+    if not overview:
+        return ""
+
+    text = overview.split("(출처")[0].replace("\n", " ").strip()
+    if not text:
+        return ""
+
+    first_sentence = re.split(r"(?<=[.!?])\s", text, maxsplit=1)[0].strip()
+    if len(first_sentence) > max_length:
+        first_sentence = first_sentence[:max_length].rstrip() + "..."
+    return first_sentence
+
+
+# overview가 없을 때(TourAPI 실시간 검색 결과는 개요를 안 주는 searchKeyword2만 거쳐서
+# overview가 비어 있는 경우가 많음) 쓰는 대체 문구. 장소별로 문구 자체가 똑같이 반복되는
+# 느낌을 줄이려고 이름 해시로 그때그때 다른 표현을 고른다(같은 장소는 항상 같은 문구).
+GENERIC_REASON_TEMPLATES = [
+    "{category_text}인 곳으로, {style_text} 취향에 잘 맞습니다.",
+    "{style_text} 취향이라면 가볼 만한 {category_text}입니다.",
+    "{style_text} 취향에 어울리는 {category_text}로 추천드립니다.",
+]
+
 
 def _build_place_reason(
     category: str | None,
@@ -212,10 +278,14 @@ def _build_place_reason(
     review_count: Any,
     travel_style: List[str],
     prefer_local: bool = False,
+    overview: str | None = None,
+    name: str = "",
 ) -> str:
     """
-    장소의 카테고리·평점·리뷰수를 반영해 추천 이유를 장소별로 다르게 만든다.
-    (기존에는 검색 배치 전체에 동일한 문자열을 재사용해 모든 장소의 추천 이유가 똑같았음)
+    장소의 카테고리·평점·리뷰수·개요(overview)를 반영해 추천 이유를 장소별로 다르게 만든다.
+    (기존에는 카테고리·취향만으로 만든 고정 템플릿이라, travel_style이 같으면 문장 뒷부분이
+    모든 장소에서 토씨 하나 안 틀리고 똑같이 나왔음 — 사용자가 "다 똑같은 형식"이라고
+    느낀 원인. overview가 있으면 그 장소만의 실제 소개 문구를 붙여서 실감나게 만든다.)
 
     숙박/음식점은 "OO 취향에 잘 맞습니다"라고 하면 사용자가 말한 취향과 억지로
     끼워맞춘 것처럼 읽혀서, 대신 평점·리뷰수만으로 그 장소가 어떤 곳인지 자연스럽게
@@ -229,6 +299,7 @@ def _build_place_reason(
     category_text = category or "관광지"
     style_text = ", ".join(travel_style) if travel_style else "여행"
     signal = _format_place_signal(rating, review_count)
+    snippet = _extract_overview_snippet(overview)
 
     review_count_value = review_count if isinstance(review_count, (int, float)) else 0
     rating_value = _to_float(rating)
@@ -238,15 +309,21 @@ def _build_place_reason(
     )
 
     if category == RESTAURANT_CATEGORY:
-        return f"{signal}{popularity_prefix}맛집입니다."
+        base = f"{signal}{popularity_prefix}맛집입니다."
+        return f"{base} {snippet}" if snippet else base
 
     if category == LODGING_CATEGORY:
-        return f"{signal}편하게 쉬기 좋은 숙소입니다."
+        base = f"{signal}편하게 쉬기 좋은 숙소입니다."
+        return f"{base} {snippet}" if snippet else base
 
-    return (
-        f"{signal}{popularity_prefix}{category_text}인 곳으로, "
-        f"{style_text} 취향에 잘 맞습니다."
-    )
+    if snippet:
+        return f"{signal}{snippet}"
+
+    # 내장 hash()는 문자열의 경우 프로세스마다 랜덤 시드가 섞여 재현이 안 되므로,
+    # 문자 코드 합으로 직접 안정적인 인덱스를 만든다(같은 이름은 항상 같은 문구).
+    template_index = sum(ord(c) for c in name) % len(GENERIC_REASON_TEMPLATES)
+    template = GENERIC_REASON_TEMPLATES[template_index]
+    return signal + template.format(category_text=category_text, style_text=style_text)
 
 
 def _normalize_tour_place(
@@ -274,11 +351,12 @@ def _normalize_tour_place(
             or item.get("sigungucode")
         ),
         "image_url": item.get("firstimage") or "",
-        "reason": _build_place_reason(category, None, None, travel_style),
+        "reason": _build_place_reason(category, None, None, travel_style, name=title),
         "source": source,
         "category": category,
         "rating": None,
         "review_count": None,
+        "overview": "",
         "raw": item,
     }
 
@@ -305,6 +383,7 @@ def _normalize_rag_place(
     category = item.get("category")
     rating = item.get("rating")
     review_count = item.get("review_count")
+    overview = item.get("overview") or ""
 
     return {
         "name": title,
@@ -316,12 +395,15 @@ def _normalize_rag_place(
         "area_code": None,
         "signgu_code": None,
         "image_url": "",
-        "reason": _build_place_reason(category, rating, review_count, travel_style, prefer_local),
+        "reason": _build_place_reason(
+            category, rating, review_count, travel_style, prefer_local, overview=overview, name=title
+        ),
         "source": "rag",
         "rating": rating,
         "review_count": review_count,
         "category": category,
         "similarity": item.get("similarity"),
+        "overview": overview,
         "raw": item,
     }
 
@@ -430,6 +512,31 @@ def _fill_missing_place_details(places: List[Place]) -> List[Place]:
                         place["longitude"] = coords["longitude"]
                 except Exception as e:
                     print(f"[경고] Google Places 좌표 보완 실패 ({place.get('name')}): {e}")
+
+            # 여행코스 하위 장소(subcontentid)는 가끔 TourAPI에 더 이상 등록되지 않은
+            # (병합/삭제된) 오래된 content_id를 가리켜서 detailCommon2가 빈 응답({})을
+            # 주는 경우가 실측으로 확인됐다 — "오죽헌", "태종대 전망대"처럼 실제로는
+            # 유명하고 멀쩡한 관광지인데도 이 낡은 ID 때문에 category를 못 채워서, 이후
+            # 필터가 "category를 모르니 안전하게 제외"하며 정작 좋은 추천을 놓치는
+            # 문제가 있었다. content_id 하나만 죽은 것뿐 장소 자체는 유효하므로, 이름으로
+            # 다시 검색해 살아있는 content_id/카테고리/좌표로 갱신을 시도한다.
+            if not place.get("category") and place.get("source") == "course" and place.get("name"):
+                try:
+                    fresh_results = search_keyword(place["name"], num_of_rows=1, page_no=1)
+                except TourAPIError:
+                    fresh_results = []
+
+                if fresh_results:
+                    fresh = fresh_results[0]
+                    place["content_id"] = fresh.get("contentid") or place.get("content_id")
+                    place["category"] = content_type_id_to_category(fresh.get("contenttypeid"))
+                    if not place.get("address"):
+                        place["address"] = fresh.get("addr1") or ""
+                    if not place.get("image_url"):
+                        place["image_url"] = fresh.get("firstimage") or ""
+                    if place.get("latitude") is None or place.get("longitude") is None:
+                        place["latitude"] = _to_float(fresh.get("mapy"))
+                        place["longitude"] = _to_float(fresh.get("mapx"))
         except Exception as e:
             print(f"[경고] 장소 상세정보 조회 실패 ({place.get('name')}): {e}")
 
@@ -485,6 +592,7 @@ def _search_rag_places(
         place for place in places
         if place.get("category") != "숙박"
         and place.get("category") != RESTAURANT_CATEGORY
+        and not _is_excluded_shopping(place)
         and not _is_lodging_by_name(_get_place_name(place))
         and not _is_non_destination_by_name(_get_place_name(place))
     ]
@@ -604,7 +712,7 @@ def _search_lodging_place(
             city=city,
         )
     except Exception:
-        return None
+        results = []
 
     lodging_places = _deduplicate_places(
         [
@@ -616,6 +724,26 @@ def _search_lodging_place(
             or _is_lodging_by_name(str(item.get("title") or ""))
         ]
     )
+
+    # RAG(Supabase 코퍼스)에 이 도시의 숙박이 아예 없거나(수집이 안 된 도시) 유사도
+    # 임계값에 걸러지면, _search_rag_places처럼 TourAPI 실시간 검색으로 보충한다 —
+    # 이게 없으면 체크인 일정이 조용히 통째로 빠지는 문제가 있었다.
+    if not lodging_places:
+        try:
+            tour_items = search_keyword(
+                keyword=city, content_type_id=LODGING_CONTENT_TYPE_ID, num_of_rows=20, page_no=1
+            )
+        except TourAPIError:
+            tour_items = []
+
+        lodging_places = _deduplicate_places(
+            [
+                _normalize_tour_place(item, "tour_api", travel_style or [])
+                for item in tour_items
+                if is_in_expected_region(city, item.get("addr1"))
+            ]
+        )
+
     if not lodging_places:
         return None
 
@@ -625,7 +753,12 @@ def _search_lodging_place(
     for place in lodging_places:
         if place.get("category") != LODGING_CATEGORY:
             place["reason"] = _build_place_reason(
-                LODGING_CATEGORY, place.get("rating"), place.get("review_count"), travel_style or []
+                LODGING_CATEGORY,
+                place.get("rating"),
+                place.get("review_count"),
+                travel_style or [],
+                overview=place.get("overview"),
+                name=_get_place_name(place),
             )
 
     lodging_places = _fill_missing_place_details(lodging_places)
@@ -702,7 +835,7 @@ def _search_restaurant_places(
             city=city,
         )
     except Exception:
-        return []
+        results = []
 
     restaurant_places = _deduplicate_places(
         [
@@ -711,6 +844,31 @@ def _search_restaurant_places(
             if item.get("category") == RESTAURANT_CATEGORY
         ]
     )
+
+    # _search_lodging_place와 동일한 이유로, RAG만으로는 필요한 슬롯 수(max_restaurants)를
+    # 못 채울 수 있어 TourAPI 실시간 검색으로 보충한다 — 없으면 점심/저녁 슬롯 일부가
+    # 조용히 일반 관광지로 채워지거나 통째로 비는 문제가 있었다(RAG가 아예 0개를 주는
+    # 경우뿐 아니라, 필요한 개수보다 적게 주는 경우도 포함).
+    if len(restaurant_places) < max_restaurants:
+        try:
+            tour_items = search_keyword(
+                keyword=city,
+                content_type_id=RESTAURANT_CONTENT_TYPE_ID,
+                num_of_rows=max(20, max_restaurants * 5),
+                page_no=1,
+            )
+        except TourAPIError:
+            tour_items = []
+
+        restaurant_places = _deduplicate_places(
+            restaurant_places
+            + [
+                _normalize_tour_place(item, "tour_api", travel_style)
+                for item in tour_items
+                if is_in_expected_region(city, item.get("addr1"))
+            ]
+        )
+
     if not restaurant_places:
         return []
 
@@ -844,13 +1002,18 @@ def _search_real_places(
             for item in items
         ]
     )
-    # _search_rag_places와 동일한 이유로 숙박/음식점/공항은 일반 후보에서 제외한다.
+    # _search_rag_places와 동일한 이유로 숙박/음식점/쇼핑/공항은 일반 후보에서 제외한다.
+    # searchKeyword2는 전국 대상 키워드 검색이라 "부산" 검색에 충북 옥천의 "부산식당" 같은
+    # 동명 상호가 섞여 들어온다(ingest_city가 오프라인 수집 시 걸러내는 것과 동일한 문제) —
+    # is_in_expected_region으로 주소가 실제 그 도시/지역 소속인지 확인해서 걸러낸다.
     return [
         place for place in places
         if place.get("category") != "숙박"
         and place.get("category") != RESTAURANT_CATEGORY
+        and not _is_excluded_shopping(place)
         and not _is_lodging_by_name(_get_place_name(place))
         and not _is_non_destination_by_name(_get_place_name(place))
+        and is_in_expected_region(city, place.get("address"))
     ]
 
 
@@ -965,7 +1128,7 @@ def _search_course_related_places(
                 break
 
             sub_name = str(sub_items[i].get("subname") or "")
-            if _is_non_destination_by_name(sub_name):
+            if _is_non_destination_by_name(sub_name) or _is_meal_placeholder_by_name(sub_name):
                 continue
 
             related_places.append(_normalize_course_sub_place(sub_items[i], base_name))
@@ -1684,6 +1847,14 @@ def build_route_plan(
 
         def _filter_with_must_include(candidates: List[Place], must_includes: List[Place]) -> List[Place]:
             filtered = _filter_places_within_radius(candidates)
+            # 제주도처럼 관광지가 넓게 퍼진 지역은 15km 반경 군집화를 그대로 적용하면
+            # 취향 1등 근처 소수만 남고 나머지 날짜를 채울 후보가 통째로 사라진다
+            # (실측: 제주 8개 후보 → 반경 필터 후 3개, 3일 일정(12슬롯)의 Day 2/3가
+            # 통째로 빔). 필터링 결과가 원래 후보 수와 필요한 슬롯 수(max_places) 중
+            # 작은 쪽에도 못 미치면, 지리적 군집화보다 "일정을 채우는 것"을 우선해서
+            # 필터링 전 전체 후보로 되돌린다(취향 순위는 그대로 유지됨).
+            if len(filtered) < min(len(candidates), max_places):
+                filtered = list(candidates)
             # filtered에 필수 장소가 빠졌다면 다시 강제 추가
             filtered_names = {f["name"] for f in filtered}
 
@@ -1711,11 +1882,20 @@ def build_route_plan(
     related_places = _fill_missing_place_details(related_places)
     # 코스 하위 장소는 category가 매칭 전엔 None이라 여기서 채워지기 전까진 걸러낼 수
     # 없었다 — _search_rag_places/_search_real_places와 동일하게, 채워진 category가
-    # 숙박/음식점인 곳은 일반 관광지 슬롯에 들어가면 안 되므로 제외한다.
+    # 숙박/음식점/쇼핑인 곳은 일반 관광지 슬롯에 들어가면 안 되므로 제외한다.
+    #
+    # category가 detailCommon2 조회 후에도 여전히 None이면 제외한다 — 실제 사례로
+    # "점심식사(용산회 식당)"처럼 코스 데이터에 실제 등록된 장소가 아니라 안내문 성격의
+    # 항목이 섞여 있어서(_is_meal_placeholder_by_name으로 이름 패턴은 먼저 걸러내지만,
+    # 아직 못 걸러낸 다른 패턴의 안내문 항목도 있을 수 있음) content_id가 있어도 category를
+    # 못 채우는 경우가 실측으로 확인됐다. category를 못 정한 곳은 숙박/음식점인지도 알 수
+    # 없어 안전하게 제외하는 편이 낫다.
     related_places = [
         place for place in related_places
-        if place.get("category") != LODGING_CATEGORY
+        if place.get("category") is not None
+        and place.get("category") != LODGING_CATEGORY
         and place.get("category") != RESTAURANT_CATEGORY
+        and not _is_excluded_shopping(place)
         and not _is_lodging_by_name(_get_place_name(place))
     ]
     # 코스에서 붙는 연관 장소도 후보 군집(candidate_places)과 동떨어지지 않게 거리 필터를 통과시킨다
@@ -2334,6 +2514,25 @@ def build_place_move_route_plan(
 
     moving_place = _place_from_schedule_entry(previous_daily_schedule[source_index])
     original_destination_name = previous_daily_schedule[destination_index].get("place_name", "")
+
+    # "체크인"은 _find_index가 애초에 movable_indexes에서 빼놓아 source/destination 어느
+    # 쪽으로도 선택될 수 없지만, "점심"/"저녁"(식사 슬롯)은 그런 보호가 없다 — 목적지
+    # 슬롯이 식사 시간대인데 옮겨오는 장소가 음식점이 아니거나(또는 그 반대), 그대로
+    # 밀어넣으면 시간대 라벨과 실제 장소 종류가 어긋난 일정이 만들어진다. 목적지 시간대를
+    # 사용자가 명시적으로 식사 시간대로 지목했을 때만 실제로 발생하는 경우다(시간대
+    # 미지정 시 기본으로 고르는 "그 날짜 첫 슬롯"은 슬롯 순서상 항상 식사가 아닌 슬롯이라
+    # 문제되지 않음).
+    destination_slot_label = previous_daily_schedule[destination_index]["time_slot"]
+    destination_is_meal_slot = destination_slot_label in MEAL_TIME_SLOTS
+    moving_place_is_restaurant = moving_place.get("category") == RESTAURANT_CATEGORY
+
+    if destination_is_meal_slot != moving_place_is_restaurant:
+        return _unchanged(
+            f"Day {destination_day} {destination_slot_label}은(는) "
+            + ("식사 시간대라 음식점만" if destination_is_meal_slot else "식사 시간대가 아니라 음식점이 아닌 장소만")
+            + f" 옮길 수 있어, '{_get_place_name(moving_place)}'을(를) 옮기지 못하고 "
+            "기존 일정을 그대로 유지했습니다."
+        )
 
     # source 자리를 채울 새 후보를 build_slot_replacement_route_plan과 동일한 방식으로 찾는다
     # — 이동/목적지 두 슬롯을 제외한 나머지 일정을 "이미 있는 장소"로 보고 중복을 피한다.

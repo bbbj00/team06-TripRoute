@@ -1231,6 +1231,11 @@ def test_build_route_plan_applies_daily_preferences_per_day(monkeypatch):
         },
     )
     monkeypatch.setattr(route_planner, "get_course_content_ids", lambda city, **kwargs: [])
+    # RAG mock(fake_retrieve)은 음식점/숙박 카테고리를 절대 반환하지 않으므로,
+    # _search_restaurant_places/_search_lodging_place의 TourAPI 실시간 폴백이 실제
+    # 네트워크를 타지 않도록 빈 결과로 막아둔다(이 테스트의 관심사는 daily_preferences
+    # 오버라이드 동작이지 음식점/숙박 폴백이 아님).
+    monkeypatch.setattr(route_planner, "search_keyword", lambda **kwargs: [])
 
     result = route_planner.build_route_plan(
         parsed={

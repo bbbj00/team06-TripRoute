@@ -86,10 +86,14 @@ def _to_float(value: Optional[Any]) -> Optional[float]:
         return None
 
 
-def _is_in_expected_region(city: str, address: Optional[str]) -> bool:
+def is_in_expected_region(city: str, address: Optional[str]) -> bool:
     """
     address가 city에 해당하는 시/도 소속이 맞는지 확인합니다.
     city가 CITY_TO_REGION_PREFIXES에 없으면(매핑 안 된 새 도시) 필터링하지 않고 통과시킵니다.
+
+    원래 ingest_city(오프라인 수집) 전용이었지만, route_planner.py의 TourAPI 실시간
+    검색 폴백(_search_real_places/_search_restaurant_places/_search_lodging_place)에도
+    동일한 "동명 상호 다른 지역 오염" 문제가 있어서 그대로 재사용한다.
     """
 
     prefixes = CITY_TO_REGION_PREFIXES.get(city)
@@ -165,7 +169,7 @@ def ingest_city(
             # city 지역과 다른 주소도 제외 (동명 키워드로 엉뚱한 지역이 섞이는 문제 방지)
             if not detail.get("addr1"):
                 continue
-            if not _is_in_expected_region(city, detail.get("addr1")):
+            if not is_in_expected_region(city, detail.get("addr1")):
                 continue
 
         detail["overview"] = overview

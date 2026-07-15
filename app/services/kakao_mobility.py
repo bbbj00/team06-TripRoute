@@ -1,3 +1,4 @@
+import time
 from typing import Any, Dict, Tuple
 
 import requests
@@ -6,6 +7,13 @@ from app.core.config import settings
 from app.utils.cache import cached_call
 
 BASE_URL = "https://apis-navi.kakaomobility.com/v1/directions"
+
+# TourAPI(app/services/tour_api.py)와 동일한 이유로 재시도한다 — 카카오모빌리티도
+# 가끔 타임아웃/일시적 오류가 나는데, 재시도 없이 바로 실패 처리하면(과거 실제로
+# 그랬음) 정상적인 좌표인데도 그 요청 시점의 일시적 문제 때문에 "조회 실패"가
+# 그대로 최종 일정에 박혀버린다.
+MAX_RETRIES = 3
+RETRY_BACKOFF_SECONDS = 1
 
 
 class KakaoMobilityError(Exception):
@@ -42,9 +50,22 @@ def _fetch_route(
         "priority": priority,
     }
 
-    response = requests.get(BASE_URL, headers=headers, params=params, timeout=10)
-    response.raise_for_status()
-    body = response.json()
+    # 네트워크 타임아웃/일시적 오류(RequestException)만 재시도한다. result_code != 0
+    # (아래에서 raise하는 KakaoMobilityError)은 좌표 자체의 길찾기 실패라 재시도해도
+    # 똑같이 실패하므로 재시도 대상이 아니다.
+    last_error: Exception | None = None
+    for attempt in range(MAX_RETRIES):
+        try:
+            response = requests.get(BASE_URL, headers=headers, params=params, timeout=10)
+            response.raise_for_status()
+            body = response.json()
+            break
+        except (requests.exceptions.RequestException, ValueError) as e:
+            last_error = e
+            if attempt < MAX_RETRIES - 1:
+                time.sleep(RETRY_BACKOFF_SECONDS * (attempt + 1))
+    else:
+        raise KakaoMobilityError(f"길찾기 요청 실패 ({MAX_RETRIES}회 재시도): {last_error}")
 
     routes = body.get("routes", [])
     if not routes or routes[0].get("result_code") != 0:
