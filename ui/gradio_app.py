@@ -31,6 +31,12 @@ from app.utils.formatter import (  # noqa: E402
 
 
 # ---------------------------------------------------------
+# 로고 (좌측 상단). ui/assets/triproute_logo.png 에 로고 파일을 두면 표시된다.
+# ---------------------------------------------------------
+LOGO_PATH = PROJECT_ROOT / "ui" / "assets" / "triproute_logo.png"
+
+
+# ---------------------------------------------------------
 # 기본값
 # ---------------------------------------------------------
 DEFAULT_MESSAGE = (
@@ -43,7 +49,7 @@ WELCOME_MESSAGE = (
     "아래처럼 여행 조건을 자연어로 입력해주세요.<br><br>"
     "<span style='color:#8B8D98;'>&gt; 강릉으로 1박 2일 여행 가고 싶어.<br>"
     "&gt; 바다랑 감성 카페, 먹거리를 좋아해.</span><br><br>"
-    "여행 계획이 완성되면 아래 <b>결과 패널</b>에서 일정 · 동선 · 비용을 확인할 수 있어요.<br>"
+    "여행 계획이 완성되면 가운데 <b>결과 패널</b>에서 일정 · 동선 · 비용을 확인할 수 있어요.<br>"
     "로그인하면 대화 기록이 저장되고, \"카페 말고 맛집 위주로 바꿔줘\" 같은 후속 요청도<br>"
     "이전 조건을 이어받아 처리됩니다."
 )
@@ -52,7 +58,7 @@ LOADING_MESSAGE = "여행 계획을 만들고 있어요..."
 
 RESULT_PLACEHOLDER = (
     "아직 생성된 여행 계획이 없습니다.\n\n"
-    "왼쪽에서 여행 요청을 입력하고 **여행 계획 생성**을 눌러주세요."
+    "오른쪽 **요청사항**에서 여행 요청을 입력하고 **여행 계획 생성**을 눌러주세요."
 )
 
 LOGIN_ERROR_MESSAGE = "이메일 또는 비밀번호를 확인해주세요."
@@ -65,6 +71,37 @@ EMPTY_AUTH_INPUT_MESSAGE = "이메일과 비밀번호를 입력해주세요."
 TOKEN_REFRESH_MARGIN_SECONDS = 60
 
 GUEST_BROWSER_STATE = {"refresh_token": None, "user_id": None, "email": None}
+
+
+# ---------------------------------------------------------
+# 다국어(i18n) — 설정 팝업의 "언어"로 전환되는 UI 문구
+# ---------------------------------------------------------
+I18N = {
+    "ko": {
+        "new_chat": "＋  새로운 대화",
+        "recent": "이전 대화 기록",
+        "search_ph": "이전 대화 검색",
+        "req": "요청사항",
+        "transport": "이동수단",
+        "people": "여행 인원",
+        "msg_label": "여행 요청",
+        "msg_ph": "여행 지역, 기간, 취향을 입력해주세요.  예) " + DEFAULT_MESSAGE,
+        "send": "여행 계획 생성",
+        "logout": "로그아웃",
+    },
+    "en": {
+        "new_chat": "＋  New chat",
+        "recent": "Recent chats",
+        "search_ph": "Search chats",
+        "req": "Requests",
+        "transport": "Transport",
+        "people": "Travelers",
+        "msg_label": "Trip request",
+        "msg_ph": "Enter destination, dates, and preferences.  e.g. A 2-day trip to Gangneung",
+        "send": "Generate plan",
+        "logout": "Log out",
+    },
+}
 
 
 # ---------------------------------------------------------
@@ -92,6 +129,13 @@ RESET_RESULT_TUPLE = (
     RESULT_PLACEHOLDER,
     RESULT_PLACEHOLDER,
 )
+
+# 로그인/회원가입 모달(auth_overlay, auth_modal)의 열림 상태를 그대로 둘지, 닫을지.
+# 로그인/회원가입 성공 시에만 _MODAL_CLOSED를 써서 Python이 직접 닫는다 — 이전에는
+# JS가 "logged-in-group이 렌더링됐는지"를 화면에서 측정해서 판단했는데, 타이밍에 따라
+# 그 측정이 씹혀서 모달이 안 닫히고 빈 채로 남는 경우가 있었다.
+_MODAL_UNCHANGED = (gr.update(), gr.update())
+_MODAL_CLOSED = (gr.update(visible=False), gr.update(visible=False))
 
 
 # ---------------------------------------------------------
@@ -150,6 +194,22 @@ def _session_choices(sessions):
     return [(_session_label(session), session["id"]) for session in sessions]
 
 
+def _filter_session_choices(sessions, query):
+    """검색어로 최근 대화 목록을 필터링해 Radio choices로 돌려준다."""
+    query = (query or "").strip().lower()
+    if not query:
+        return _session_choices(sessions)
+    return [
+        (_session_label(s), s["id"])
+        for s in sessions
+        if query in _session_label(s).lower()
+    ]
+
+
+def search_sessions(query, sessions):
+    return gr.update(choices=_filter_session_choices(sessions or [], query), value=None)
+
+
 def _guest_ui_updates():
     return (
         gr.update(visible=True),   # logged_out_group
@@ -164,12 +224,26 @@ def _guest_ui_updates():
     )
 
 
+def _profile_html(email: str) -> str:
+    safe_email = html.escape(email or "")
+    display_name = html.escape((email or "여행자").split("@")[0])
+    initial = html.escape(email[:1].upper()) if email else "U"
+    return (
+        "<div class='tr-profile'>"
+        f"<div class='tr-avatar'>{initial}</div>"
+        "<div class='tr-profile-meta'>"
+        f"<div class='tr-profile-name'>{display_name}님</div>"
+        f"<div class='tr-profile-email'>{safe_email}</div>"
+        "</div></div>"
+    )
+
+
 def _logged_in_ui_updates(email, access_token, expires_at, user_id, sessions, refresh_token):
     has_sessions = len(sessions) > 0
     return (
         gr.update(visible=False),  # logged_out_group
         gr.update(visible=True),   # logged_in_group
-        f"<div style='text-align:center; font-size:16px; font-weight:bold; color:#0052cc; margin-bottom:16px;'>{email}님 환영합니다</div>",  # welcome_text
+        _profile_html(email),      # welcome_text
         gr.update(choices=_session_choices(sessions), value=None, visible=has_sessions),  # session_radio
         gr.update(visible=not has_sessions),  # no_session_msg
         {"access_token": access_token, "expires_at": expires_at, "user_id": user_id},
@@ -179,17 +253,35 @@ def _logged_in_ui_updates(email, access_token, expires_at, user_id, sessions, re
     )
 
 
+def sync_theme_radio(saved_theme):
+    """
+    테마 라디오는 컴포넌트 기본값("dark")으로만 초기 렌더링돼서, 라이트 모드를 고르고
+    새로고침해도(APPLY_THEME_JS가 ?__theme= 쿼리로 리로드시킴) 라디오 자체는 계속
+    "다크 모드"가 선택된 것처럼 보이고, 심지어 클릭해도 Gradio 내부 값이 이미 "dark"라고
+    (착각)해서 반응이 없었다. gr.Request로 URL 쿼리를 직접 읽는 방식은 큐가 응답 없이
+    멈추는 문제가 있어서, 이미 로그인 지속에 잘 쓰이고 있는 gr.BrowserState 패턴을
+    그대로 재사용해 마지막으로 고른 테마를 localStorage에 저장/복원한다.
+    """
+    theme = saved_theme if saved_theme in ("dark", "light") else "dark"
+    return gr.update(value=theme)
+
+
+def save_theme(theme):
+    """theme_radio 변경 시 gr.BrowserState(theme_browser_state)에 선택값을 저장한다."""
+    return theme if theme in ("dark", "light") else "dark"
+
+
 def restore_login(auth_state):
     """페이지 로드 시 BrowserState의 refresh_token으로 로그인 상태를 복구한다."""
     refresh_token = (auth_state or {}).get("refresh_token")
 
     if not refresh_token:
-        return (*_guest_ui_updates(), "")
+        return (*_guest_ui_updates(), "", *_MODAL_UNCHANGED)
 
     session = auth_client.refresh_session(refresh_token)
 
     if session is None or not session.get("access_token"):
-        return (*_guest_ui_updates(), "")
+        return (*_guest_ui_updates(), "", *_MODAL_UNCHANGED)
 
     expires_at = time.time() + (session.get("expires_in") or 3600)
 
@@ -208,6 +300,7 @@ def restore_login(auth_state):
             refresh_token=session["refresh_token"],
         ),
         "",
+        *_MODAL_UNCHANGED,
     )
 
 
@@ -216,15 +309,15 @@ def do_signup(email: str, password: str):
     password = password or ""
 
     if not email or not password:
-        return (*_guest_ui_updates(), EMPTY_AUTH_INPUT_MESSAGE)
+        return (*_guest_ui_updates(), EMPTY_AUTH_INPUT_MESSAGE, *_MODAL_UNCHANGED)
 
     try:
         session = auth_client.sign_up(email, password)
     except auth_client.AuthError as error:
-        return (*_guest_ui_updates(), f"회원가입 실패: {error}")
+        return (*_guest_ui_updates(), f"회원가입 실패: {error}", *_MODAL_UNCHANGED)
 
     if not session.get("access_token"):
-        return (*_guest_ui_updates(), SIGNUP_PENDING_MESSAGE)
+        return (*_guest_ui_updates(), SIGNUP_PENDING_MESSAGE, *_MODAL_UNCHANGED)
 
     expires_at = time.time() + (session.get("expires_in") or 3600)
 
@@ -243,6 +336,7 @@ def do_signup(email: str, password: str):
             refresh_token=session["refresh_token"],
         ),
         "",
+        *_MODAL_CLOSED,
     )
 
 
@@ -251,15 +345,15 @@ def do_login(email: str, password: str):
     password = password or ""
 
     if not email or not password:
-        return (*_guest_ui_updates(), EMPTY_AUTH_INPUT_MESSAGE)
+        return (*_guest_ui_updates(), EMPTY_AUTH_INPUT_MESSAGE, *_MODAL_UNCHANGED)
 
     try:
         session = auth_client.sign_in(email, password)
     except auth_client.AuthError:
-        return (*_guest_ui_updates(), LOGIN_ERROR_MESSAGE)
+        return (*_guest_ui_updates(), LOGIN_ERROR_MESSAGE, *_MODAL_UNCHANGED)
 
     if not session.get("access_token"):
-        return (*_guest_ui_updates(), LOGIN_ERROR_MESSAGE)
+        return (*_guest_ui_updates(), LOGIN_ERROR_MESSAGE, *_MODAL_UNCHANGED)
 
     expires_at = time.time() + (session.get("expires_in") or 3600)
 
@@ -278,6 +372,7 @@ def do_login(email: str, password: str):
             refresh_token=session["refresh_token"],
         ),
         "",
+        *_MODAL_CLOSED,
     )
 
 
@@ -294,6 +389,7 @@ def do_logout(access_token_info, auth_state):
     return (
         *_guest_ui_updates(),
         "",
+        *_MODAL_UNCHANGED,
         [{"role": "assistant", "content": WELCOME_MESSAGE}],
         "",
         None,
@@ -507,7 +603,7 @@ def chat(
             used_fallback_reason = True
             streamed_text = (
                 "위 조건으로 일정, 동선, 비용을 최적화했습니다. "
-                "아래 <b>결과 패널</b>에서 상세 내용을 확인해 주세요!"
+                "가운데 <b>결과 패널</b>에서 상세 내용을 확인해 주세요!"
             )
 
         reply = header + (
@@ -578,7 +674,7 @@ def chat(
 
 
 # ---------------------------------------------------------
-# 대화 초기화
+# 대화 초기화 (새로운 대화)
 # ---------------------------------------------------------
 def clear_chat(access_token_info):
     is_logged_in = bool(access_token_info and access_token_info.get("access_token"))
@@ -602,7 +698,7 @@ def clear_chat(access_token_info):
             new_session_id = None
 
     return (
-        [],
+        [{"role": "assistant", "content": WELCOME_MESSAGE}],
         "",
         *RESET_RESULT_TUPLE,
         None,
@@ -613,16 +709,50 @@ def clear_chat(access_token_info):
 
 
 # ---------------------------------------------------------
-# "CHAT A.I+" 스타일 CSS (docs/ui_claude_design_spec.md 기준)
+# 언어 전환 — 설정 팝업의 "언어" 라디오로 UI 라벨을 교체한다.
+# (Gradio는 gr.Tab 라벨을 런타임에 못 바꾸므로 탭 이름은 그대로 둔다.)
+# ---------------------------------------------------------
+def set_language(lang):
+    t = I18N.get(lang, I18N["ko"])
+    return (
+        gr.update(value=t["new_chat"]),                       # clear_button
+        gr.update(value=f"### {t['recent']}"),                # recent_title
+        gr.update(placeholder=t["search_ph"]),                # search_box
+        gr.update(value=f"### {t['req']}"),                   # req_title
+        gr.update(label=t["transport"]),                      # transport_mode
+        gr.update(label=t["people"]),                         # people_count
+        gr.update(label=t["msg_label"], placeholder=t["msg_ph"]),  # message_input
+        gr.update(value=t["send"]),                           # send_button
+        gr.update(value=t["logout"]),                         # logout_button
+        lang,                                                 # language_state
+    )
+
+
+# ---------------------------------------------------------
+# 사이드바 접기/펼치기 — 접으면 좌측 컬럼을 숨기고 결과 패널이 넓어진다.
+# ---------------------------------------------------------
+def toggle_sidebar(is_open):
+    new_open = not is_open
+    return (
+        gr.update(visible=new_open),                 # sidebar_body
+        gr.update(value="←" if new_open else "→"),   # collapse_btn
+        new_open,
+    )
+
+
+# ---------------------------------------------------------
+# "CHAT A.I+" 스타일 CSS — 3단(사이드바 · 결과패널 · 요청사항) 다크 레이아웃
 # ---------------------------------------------------------
 CUSTOM_CSS = """
 :root {
+    /* 라이트 팔레트(기본값) — .dark 클래스가 없을 때(라이트 모드 선택 시) 적용된다 */
     --tr-outer-bg: #C9D6F2;
+    --tr-app-bg: #FFFFFF;
     --tr-card-bg: #FFFFFF;
     --tr-primary: #6C63FF;
     --tr-primary-hover: #5A52E0;
     --tr-text: #1A1A1A;
-    --tr-text-muted: #8B8D98;
+    --tr-text-muted: #6B6D78;
     --tr-border: #EDEDF2;
     --tr-selected-bg: #EEF0FC;
     --tr-pill-bg: #F3F3F8;
@@ -630,506 +760,294 @@ CUSTOM_CSS = """
     --tr-table-header-bg: #F1F1FA;
 
     --color-accent: var(--tr-primary);
-    --color-accent-soft: var(--tr-selected-bg);
     --checkbox-background-color-selected: var(--tr-primary);
-    --checkbox-background-color-selected-dark: var(--tr-primary);
-    --checkbox-border-color-selected: var(--tr-primary);
-    --checkbox-label-background-fill-selected: var(--tr-primary);
     --slider-color: var(--tr-primary);
     --button-primary-background-fill: var(--tr-primary);
     --button-primary-background-fill-hover: var(--tr-primary-hover);
 }
 
-.gradio-container,
-.gradio-container * {
-    color-scheme: light !important;
+.dark {
+    /* 다크 팔레트 — Gradio가 dark 테마일 때 .gradio-container(또는 조상)에 붙이는 클래스 */
+    --tr-outer-bg: #0f111b;
+    --tr-app-bg: #161826;
+    --tr-card-bg: #232532;
+    --tr-primary: #9184d9;
+    --tr-primary-hover: #a79ce6;
+    --tr-text: #e9e9ed;
+    --tr-text-muted: #9397ab;
+    --tr-border: rgba(233,233,237,0.14);
+    --tr-selected-bg: #2b2741;
+    --tr-pill-bg: #1c1e2b;
+    --tr-table-bg: #1c1e2b;
+    --tr-table-header-bg: #262838;
 }
 
-:root,
-.dark,
-.gradio-container {
-    --background-fill-primary: #FFFFFF !important;
-    --background-fill-secondary: #FFFFFF !important;
+.gradio-container { color-scheme: light; }
+.dark.gradio-container, .dark .gradio-container { color-scheme: dark; }
+
+:root, .dark, .gradio-container {
+    --background-fill-primary: var(--tr-app-bg) !important;
+    --background-fill-secondary: var(--tr-app-bg) !important;
     --body-background-fill: var(--tr-outer-bg) !important;
     --block-background-fill: var(--tr-card-bg) !important;
-    --input-background-fill: #FFFFFF !important;
+    --input-background-fill: var(--tr-pill-bg) !important;
     --body-text-color: var(--tr-text) !important;
     --border-color-primary: var(--tr-border) !important;
     --slider-color: var(--tr-primary) !important;
-    --slider-color-hover: var(--tr-primary) !important;
     --color-accent: var(--tr-primary) !important;
+    --neutral-950: var(--tr-app-bg) !important;
 }
 
-.dark .message-wrap,
-.dark .message-row,
-.dark .message,
-.dark .panel {
-    background-color: transparent !important;
-}
-
-#login-trigger-btn {
-    background: #fff !important;
-    border: 1px solid var(--tr-border) !important;
-    color: var(--tr-text) !important;
-    border-radius: 999px !important;
-    min-height: 44px;
-    font-weight: 600;
-}
-#login-trigger-btn:hover {
-    background: var(--tr-selected-bg) !important;
-}
-
-/* Fix Login Input boxes and labels in dark mode */
-.dark input[type="text"], 
-.dark input[type="password"] {
-    background-color: #fff !important;
-    color: var(--tr-text) !important;
-    border: 1px solid var(--tr-border) !important;
-}
-
-/* Fix faint block-info labels without making everything thick */
-span[data-testid="block-info"] {
-    color: var(--tr-text) !important;
-    opacity: 1 !important;
-}
-
-#auth-overlay {
-    position: fixed !important;
-    top: 0 !important;
-    left: 0 !important;
-    width: 100vw !important;
-    height: 100vh !important;
-    background: rgba(0, 0, 0, 0.4) !important;
-    z-index: 99998 !important;
-    backdrop-filter: blur(4px);
-    margin: 0 !important;
-    padding: 0 !important;
-}
-#auth-modal {
-    position: fixed !important;
-    top: 50% !important;
-    left: 50% !important;
-    transform: translate(-50%, -50%) !important;
-    z-index: 99999 !important;
-    width: 400px !important;
-    max-width: 90vw !important;
-    min-height: 400px !important;
-    background: #fff !important;
-    box-shadow: 0 20px 60px rgba(0,0,0,0.2) !important;
-    border-radius: 24px !important;
-    padding: 32px !important;
-    margin: 0 !important;
-    box-sizing: border-box !important;
-    overflow: visible !important;
-}
-#auth-modal > * {
-    overflow: visible !important;
-}
-#close-modal-btn {
-    position: absolute !important;
-    top: 16px !important;
-    right: 16px !important;
-    width: 32px !important;
-    height: 32px !important;
-    min-width: 32px !important;
-    min-height: 32px !important;
-    border-radius: 50% !important;
-    background: #f1f1f1 !important;
-    border: none !important;
-    color: #000 !important;
-    font-size: 16px !important;
-    font-weight: bold !important;
-    padding: 0 !important;
-    display: flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-    z-index: 999999 !important;
-    cursor: pointer !important;
-}
-#close-modal-btn:hover {
-    background: #e2e2e2 !important;
-}
-#auth-modal.hide, #auth-modal.hidden, #auth-modal.svelte-1gfkn6j.hide {
-    display: none !important;
-    opacity: 0 !important;
-    pointer-events: none !important;
-}
-#auth-overlay.hide, #auth-overlay.hidden, #auth-overlay.svelte-1gfkn6j.hide {
-    display: none !important;
-    opacity: 0 !important;
-    pointer-events: none !important;
-}
-#auth-modal h3 {
-    margin: 0 0 20px 0 !important;
-    font-size: 20px !important;
-    text-align: center !important;
-    color: var(--tr-text) !important;
-}
-#auth-modal .prose {
-    background: transparent !important;
-}
-#login-btn {
-    background: #6C63FF !important;
-    color: #fff !important;
-    border: none !important;
-}
-#login-btn:hover {
-    background: #5A52D5 !important;
-}
-#signup-btn {
-    background: #f1f5f9 !important;
-    color: #334155 !important;
-    border: none !important;
-}
-#signup-btn:hover {
-    background: #e2e8f0 !important;
-}
-#auth-message {
-    color: #6C63FF !important;
-    font-size: 14px !important;
-    font-weight: 600 !important;
-    text-align: center !important;
-    margin-top: 12px !important;
-}
-/* 로그인 후 사이드바에 바로 뜨는 최근 대화 블록 — 아래 "여행 설정"과 구분되게 여백/구분선 추가 */
-#logged-in-group {
-    margin-bottom: 20px !important;
-    padding-bottom: 20px !important;
-    border-bottom: 1px solid var(--tr-border) !important;
-}
-#welcome-text {
-    font-size: 16px !important;
-    font-weight: 600 !important;
-    color: var(--tr-text) !important;
-    margin-bottom: 20px !important;
-    text-align: center !important;
-    padding: 10px !important;
-}
-#welcome-text .prose {
-    background: transparent !important;
-}
-#logout-btn {
-    background: #f1f5f9 !important;
-    color: #ef4444 !important;
-    border: none !important;
-    font-weight: bold !important;
-    margin-bottom: 16px !important;
-}
-#logout-btn:hover {
-    background: #fee2e2 !important;
-}
-#recent-session-title {
-    margin-top: 24px !important;
-    margin-bottom: 12px !important;
-    font-size: 14px !important;
-    font-weight: bold !important;
-    color: var(--tr-text-light) !important;
-    text-align: center !important;
-}
-#recent-session-title .prose {
-    background: transparent !important;
-}
-
-/* "이동수단" 라디오: 체크박스 대신 세그먼트 pill 그룹으로 변경 */
-#transport-mode .wrap {
-    display: flex !important;
-    flex-wrap: wrap;
-    gap: 8px;
-    background: transparent !important;
-    border: none !important;
-}
-#transport-mode label {
-    display: inline-flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-    border: 1px solid var(--tr-border) !important;
-    background: var(--tr-pill-bg) !important;
-    border-radius: 999px !important;
-    padding: 8px 14px !important;
-    font-size: 13px;
-    color: #4A4A55;
-    text-align: center;
-}
-#transport-mode label input {
-    display: none !important;
-}
-#transport-mode label.selected {
-    background: var(--tr-primary) !important;
-    color: #fff !important;
-    border-color: var(--tr-primary) !important;
-    font-weight: 600;
-}
-
-/* 로그인/회원가입 카드 내부 텍스트 인풋 스타일 오버라이드 (팝업) */
-#logged-out-group input,
-#logged-in-group input {
-    border-radius: 12px !important;
-    border: 1px solid var(--tr-border) !important;
-    background: #fff !important;
-    padding: 10px 14px !important;
-    font-size: 13px !important;
-    color: var(--tr-text) !important;
-}
-
-input[type="range"],
-input[type="checkbox"] {
-    accent-color: var(--tr-primary) !important;
-}
-
-#session-radio .wrap {
-    display: flex !important;
-    flex-direction: column;
-    gap: 2px;
-    background: transparent !important;
-    border: none !important;
-}
-#session-radio label {
-    border: none !important;
-    background: transparent !important;
-    border-radius: 12px !important;
-    padding: 10px 12px !important;
-    font-size: 14px;
-    color: #4A4A55;
-    justify-content: flex-start !important;
-}
-#session-radio label input {
-    display: none !important;
-}
-#session-radio label.selected {
-    background: var(--tr-selected-bg) !important;
-    color: var(--tr-primary) !important;
-    font-weight: 700;
-}
-
-body {
-    background: var(--tr-outer-bg) !important;
-}
+body { background: var(--tr-outer-bg) !important; }
 
 .gradio-container {
-    max-width: 1680px !important;
-    width: 96vw !important;
-    margin: 40px auto !important;
-    background: var(--tr-card-bg) !important;
+    max-width: 1720px !important;
+    width: 97vw !important;
+    margin: 28px auto !important;
+    background: var(--tr-app-bg) !important;
     border-radius: 24px !important;
-    box-shadow: 0 20px 60px rgba(40, 50, 110, 0.15);
-    font-family: "Pretendard", "Inter", -apple-system, sans-serif;
-    padding: 8px 40px 40px !important;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+    font-family: "Inter", "Pretendard", -apple-system, sans-serif;
+    padding: 14px 24px 8px !important;
 }
 
-#title-box {
-    text-align: center;
-    margin-bottom: 24px;
-    padding-top: 16px;
-}
+/* ── 상단 헤더: 로고 + 접기 화살표 ── */
+#top-header { align-items: center !important; gap: 14px !important; margin-bottom: 8px; }
+#logo-box { max-width: 190px !important; }
+#logo-box img { height: 40px !important; width: auto !important; object-fit: contain; }
+#logo-box .image-frame, #logo-box .image-container { border: none !important; background: transparent !important; box-shadow: none !important; padding: 0 !important; }
+#logo-box button, #logo-box .icon-buttons { display: none !important; }
 
-#title-box h1 {
-    color: var(--tr-text);
-    font-weight: 700;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    margin: 0 0 4px 0;
-    font-size: 26px;
+#collapse-btn {
+    max-width: 44px !important; min-width: 44px !important;
+    height: 40px; border-radius: 10px !important;
+    background: var(--tr-card-bg) !important; border: 1px solid var(--tr-border) !important;
+    color: var(--tr-text) !important; font-size: 18px; font-weight: 700;
 }
+#collapse-btn:hover { border-color: var(--tr-primary) !important; color: var(--tr-primary) !important; }
 
-#title-box p {
-    color: var(--tr-text-muted);
-    margin: 0;
-    font-size: 14px;
-}
-
+/* ── 사이드바 ── */
 .sidebar {
     background: var(--tr-card-bg) !important;
     border: 1px solid var(--tr-border) !important;
     border-radius: 16px !important;
-    padding: 24px !important;
-    gap: 24px !important;
+    padding: 18px !important;
+    gap: 14px !important;
 }
 
+/* 프로필 (깔끔한 한 줄) */
+.tr-profile { display: flex; align-items: center; gap: 11px; padding: 2px; }
+.tr-avatar {
+    width: 38px; height: 38px; flex: none; border-radius: 50%;
+    background: var(--tr-primary); color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 15px; font-weight: 700;
+}
+.tr-profile-meta { min-width: 0; }
+.tr-profile-name { font-size: 14px; font-weight: 700; color: var(--tr-text); line-height: 1.2; }
+.tr-profile-email { font-size: 11.5px; color: var(--tr-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#welcome-text .prose { background: transparent !important; }
+
+#logout-btn {
+    background: transparent !important; color: #ef4444 !important;
+    border: 1px solid var(--tr-border) !important; font-weight: 600;
+    border-radius: 10px !important; min-height: 38px;
+}
+#logout-btn:hover { background: rgba(239,68,68,0.14) !important; }
+
+/* 새로운 대화 (사이드바 최상단 강조 버튼) */
 #new-chat-button {
-    background: var(--tr-primary) !important;
-    color: #fff !important;
-    border-radius: 999px !important;
-    font-weight: 700;
-    min-height: 44px;
-    font-size: 14px;
-    padding: 12px;
+    background: transparent !important; color: var(--tr-primary) !important;
+    border: 1px solid var(--tr-primary) !important;
+    border-radius: 12px !important; font-weight: 700;
+    min-height: 46px; font-size: 14px;
 }
-#new-chat-button:hover {
-    background: var(--tr-primary-hover) !important;
-}
+#new-chat-button:hover { background: var(--tr-selected-bg) !important; }
 
-#chatbot {
-    min-height: 420px;
-    background: #FFFFFF !important;
-    background-color: #FFFFFF !important;
+#recent-title h3 { font-size: 13px !important; font-weight: 700 !important; color: var(--tr-text-muted) !important; margin: 6px 2px 4px !important; text-transform: uppercase; letter-spacing: 0.04em; }
+#recent-title .prose { background: transparent !important; }
+
+#req-title h3 { font-size: 13px !important; font-weight: 700 !important; color: var(--tr-text-muted) !important; margin: 4px 2px 4px !important; text-transform: uppercase; letter-spacing: 0.04em; }
+#req-title .prose { background: transparent !important; }
+
+#search-box input {
+    border-radius: 12px !important; border: 1px solid var(--tr-border) !important;
+    background: var(--tr-pill-bg) !important; padding: 10px 14px !important; font-size: 13px !important; color: var(--tr-text) !important;
+}
+#search-box input:focus { border-color: var(--tr-primary) !important; }
+
+#session-radio .wrap { display: flex !important; flex-direction: column; gap: 2px; background: transparent !important; border: none !important; }
+#session-radio label {
+    border: none !important; background: transparent !important; border-radius: 12px !important;
+    padding: 10px 12px !important; font-size: 14px; color: var(--tr-text) !important; justify-content: flex-start !important;
+}
+#session-radio label input { display: none !important; }
+#session-radio label.selected { background: var(--tr-selected-bg) !important; color: var(--tr-primary) !important; font-weight: 700; }
+
+#login-trigger-btn {
+    background: var(--tr-card-bg) !important; border: 1px solid var(--tr-border) !important;
+    color: var(--tr-text) !important; border-radius: 999px !important; min-height: 44px; font-weight: 600;
+}
+#login-trigger-btn:hover { background: var(--tr-selected-bg) !important; }
+
+/* ── 결과 패널 (가운데) ── */
+#result-panel {
+    background: var(--tr-card-bg) !important;
     border: 1px solid var(--tr-border) !important;
-    border-radius: 16px !important;
-    padding: 20px !important;
-    box-sizing: border-box;
+    border-radius: 16px !important; padding: 16px 20px 20px !important;
 }
-
-/* 유저 발화: 인디고 톤 말풍선 버블 + 폰트 동기화 */
-#chatbot .message.user {
-    background: var(--tr-selected-bg) !important;
-    border: none !important;
-    border-radius: 20px 20px 4px 20px !important;
-    color: var(--tr-text) !important;
-    padding: 14px 18px !important;
-    font-size: 14px !important;
-    line-height: 1.6 !important;
-    max-width: 70% !important;
-    font-family: "Pretendard", "Inter", -apple-system, sans-serif !important;
-    word-break: break-word !important;
-}
-/* Gradio가 메시지 마크다운을 렌더링할 때 <p> 뒤에 항상 줄바꿈 문자를 하나 더 붙여서,
-   pre-wrap이면 유저 말풍선(배경색 있는 버블)에서 그 여백이 그대로 보인다(봇 답변은
-   배경이 투명해서 안 보였을 뿐). 문단 구분은 마크다운의 <p> 태그가 이미 담당하므로
-   pre-wrap 없이도 여러 줄 입력이 깨지지 않는다.
-*/
-#chatbot .message.user p:last-child {
-    margin-bottom: 0 !important;
-}
-
-#chatbot .message.bot {
-    background: transparent !important;
-    border: none !important;
-    padding: 14px 4px !important;
-    color: var(--tr-text) !important;
-    font-size: 15px !important;
-    line-height: 1.7 !important;
-    font-family: "Pretendard", "Inter", -apple-system, sans-serif !important;
-    white-space: pre-wrap !important;
-    word-break: break-word !important;
-}
-
 #result-panel .tab-nav {
-    border-bottom: 1px solid var(--tr-border) !important;
-    margin-bottom: 16px !important;
-    display: flex !important;
-    gap: 4px !important;
-    background: transparent !important;
+    border-bottom: 1px solid var(--tr-border) !important; margin-bottom: 16px !important;
+    display: flex !important; gap: 4px !important; background: transparent !important;
 }
 #result-panel .tab-nav button {
-    padding: 10px 16px !important;
-    font-size: 14px !important;
-    color: var(--tr-text-muted) !important;
-    border: none !important;
-    background: transparent !important;
-    border-bottom: 2px solid transparent !important;
-    border-radius: 0 !important;
-    font-weight: normal !important;
-    cursor: pointer;
+    padding: 10px 16px !important; font-size: 14px !important; color: var(--tr-text-muted) !important;
+    border: none !important; background: transparent !important; border-bottom: 2px solid transparent !important;
+    border-radius: 0 !important; font-weight: normal !important; cursor: pointer;
 }
-#result-panel .tab-nav button:hover {
-    color: var(--tr-primary) !important;
-    background: transparent !important;
-}
-#result-panel .tab-nav button.selected {
-    color: var(--tr-primary) !important;
-    border-bottom-color: var(--tr-primary) !important;
-    font-weight: 700 !important;
-}
-
-#result-panel-title h3 {
-    font-weight: 700;
-    color: var(--tr-text);
-    margin: 28px 0 12px;
-    font-size: 16px;
-}
-
-#result-panel {
-    border: 1px solid var(--tr-border) !important;
-    border-radius: 16px !important;
-    padding: 20px !important;
-}
-
+#result-panel .tab-nav button:hover { color: var(--tr-primary) !important; }
+#result-panel .tab-nav button.selected { color: var(--tr-primary) !important; border-bottom-color: var(--tr-primary) !important; font-weight: 700 !important; }
 #result-panel table {
-    background: var(--tr-table-bg);
-    border: 1px solid var(--tr-border);
-    border-radius: 16px;
-    border-collapse: separate;
-    border-spacing: 0;
-    overflow: hidden;
-    width: 100%;
-    font-size: 14px;
-    margin-bottom: 20px;
+    background: var(--tr-table-bg); border: 1px solid var(--tr-border); border-radius: 16px;
+    border-collapse: separate; border-spacing: 0; overflow: hidden; width: 100%; font-size: 14px; margin-bottom: 20px;
 }
-#result-panel th {
-    background: var(--tr-table-header-bg) !important;
-    color: #4A4A55 !important;
-    padding: 10px 14px !important;
-    text-align: left;
-    border: none !important;
-    font-weight: normal;
+#result-panel th { background: var(--tr-table-header-bg) !important; color: var(--tr-text-muted) !important; padding: 10px 14px !important; text-align: left; border: none !important; font-weight: normal; }
+#result-panel td { padding: 10px 14px !important; border: none !important; border-top: 1px solid var(--tr-border) !important; color: var(--tr-text) !important; }
+#result-panel tr:first-child td { border-top: none !important; }
+#result-panel h3 { color: var(--tr-primary) !important; font-size: 15px !important; margin: 20px 0 8px !important; font-weight: 700 !important; }
+
+/* ── 챗봇 / 입력 (오른쪽) ── */
+#chatbot {
+    min-height: 360px; background: var(--tr-card-bg) !important;
+    border: 1px solid var(--tr-border) !important; border-radius: 16px !important;
+    padding: 18px !important; box-sizing: border-box;
 }
-#result-panel td {
-    padding: 10px 14px !important;
-    border: none !important;
-    border-top: 1px solid var(--tr-border) !important;
-    color: var(--tr-text) !important;
+#chatbot .message.user {
+    background: var(--tr-selected-bg) !important; border: none !important;
+    border-radius: 20px 20px 4px 20px !important; color: var(--tr-text) !important;
+    padding: 14px 18px !important; font-size: 15px !important; line-height: 1.6 !important; max-width: 92% !important;
 }
-#result-panel tr:first-child td {
-    border-top: none !important;
+#chatbot .message.user p:last-child { margin-bottom: 0 !important; }
+#chatbot .message.bot { background: transparent !important; border: none !important; padding: 12px 4px !important; color: var(--tr-text) !important; font-size: 14px !important; line-height: 1.7 !important; white-space: pre-wrap !important; }
+
+/* 이동수단: 세그먼트 pill */
+#transport-mode .wrap { display: flex !important; flex-wrap: wrap; gap: 8px; background: transparent !important; border: none !important; }
+#transport-mode label {
+    display: inline-flex !important; align-items: center !important; justify-content: center !important;
+    border: 1px solid var(--tr-border) !important; background: var(--tr-pill-bg) !important;
+    border-radius: 999px !important; padding: 8px 14px !important; font-size: 13px; color: var(--tr-text) !important; white-space: nowrap;
 }
-#result-panel h3 {
-    color: var(--tr-primary) !important;
-    font-size: 15px !important;
-    margin: 20px 0 8px !important;
-    font-weight: 700 !important;
-}
+#transport-mode label input { display: none !important; }
+#transport-mode label.selected { background: var(--tr-primary) !important; color: #fff !important; border-color: var(--tr-primary) !important; font-weight: 600; }
+
+input[type="range"], input[type="checkbox"] { accent-color: var(--tr-primary) !important; }
 
 #message-input textarea {
-    border-radius: 28px !important;
-    border: 1px solid var(--tr-border) !important;
-    box-shadow: 0 8px 24px rgba(40, 50, 110, 0.08) !important;
-    padding: 16px 20px !important;
-    font-size: 14px !important;
-    color: var(--tr-text) !important;
-    font-family: "Pretendard", "Inter", -apple-system, sans-serif !important;
-    white-space: pre-wrap !important;
+    border-radius: 24px !important; border: 1px solid var(--tr-border) !important;
+    box-shadow: 0 8px 24px rgba(40, 50, 110, 0.08) !important; padding: 14px 18px !important;
+    font-size: 14px !important; color: var(--tr-text) !important; white-space: pre-wrap !important;
 }
-#message-input textarea:focus {
-    border-color: var(--tr-primary) !important;
-}
+#message-input textarea:focus { border-color: var(--tr-primary) !important; }
 
 #send-button {
-    min-height: 48px;
-    font-weight: 700;
-    font-size: 14px;
-    background: var(--tr-primary) !important;
-    color: #fff !important;
-    border-radius: 999px !important;
-    padding: 12px 24px !important;
-    align-self: flex-start !important;
+    height: 48px !important; min-height: 48px !important; max-height: 48px !important;
+    font-weight: 700; font-size: 14px; background: var(--tr-primary) !important;
+    color: #fff !important; border-radius: 999px !important; padding: 12px 24px !important;
+    overflow: hidden !important; white-space: nowrap !important;
+    display: flex !important; align-items: center !important; justify-content: center !important;
 }
-#send-button:hover {
-    background: var(--tr-primary-hover) !important;
+#send-button:hover { background: var(--tr-primary-hover) !important; }
+
+/* ── 하단 푸터 ── */
+#app-footer { text-align: center; color: var(--tr-text-muted); font-size: 12px; padding: 14px 0 6px; }
+#app-footer .prose { background: transparent !important; }
+#footer-settings-btn {
+    background: transparent !important; border: none !important; color: var(--tr-text-muted) !important;
+    font-size: 12px !important; font-weight: 600; box-shadow: none !important; padding: 0 6px !important; min-width: 0 !important;
 }
+#footer-settings-btn:hover { color: var(--tr-primary) !important; }
+#footer-row { justify-content: center !important; align-items: center !important; gap: 6px !important; flex-wrap: nowrap !important; margin-top: 4px; }
+#footer-row > * { flex: 0 0 auto !important; }
+#app-footer { width: auto !important; margin: 0 !important; min-width: 0 !important; }
+#app-footer p { margin: 0 !important; }
+
+/* ── 로그인 / 설정 모달 ──
+   숨김은 Python의 visible=False가 담당(Gradio가 기본으로 렌더링을 건너뛴다).
+   .hide 클래스는 열려 있던 모달을 강제로 즉시 접어야 할 때만 쓰는 보조 장치다.
+   내부 컨텐츠(로그인 폼/설정 라디오)가 접히지 않도록 display는 block 하나로 통일한다
+   (flex + 접힌 자식 조합에서 로그인 폼이 통째로 안 보이는 문제가 있었음). */
+#auth-overlay, #settings-overlay {
+    position: fixed !important; inset: 0 !important; width: 100vw !important; height: 100vh !important;
+    background: rgba(0,0,0,0.4) !important; z-index: 99998 !important; backdrop-filter: blur(4px);
+    margin: 0 !important; padding: 0 !important;
+}
+#auth-modal, #settings-modal {
+    position: fixed !important; top: 50% !important; left: 50% !important; transform: translate(-50%, -50%) !important;
+    z-index: 99999 !important; width: 400px !important; max-width: 90vw !important;
+    background: var(--tr-card-bg) !important; box-shadow: 0 20px 60px rgba(0,0,0,0.5), 0 0 0 1px var(--tr-border) !important;
+    border-radius: 24px !important; padding: 30px !important; margin: 0 !important; box-sizing: border-box !important;
+}
+#auth-overlay.hide, #auth-modal.hide, #settings-overlay.hide, #settings-modal.hide {
+    display: none !important; opacity: 0 !important; pointer-events: none !important;
+}
+#auth-modal h3, #settings-modal h3 { margin: 0 0 18px 0 !important; font-size: 20px !important; text-align: center !important; color: var(--tr-text) !important; }
+#close-modal-btn, #close-settings-btn {
+    position: absolute !important; top: 16px !important; right: 16px !important;
+    width: 32px !important; height: 32px !important; min-width: 32px !important;
+    border-radius: 50% !important; background: var(--tr-pill-bg) !important; border: none !important;
+    color: var(--tr-text) !important; font-size: 16px !important; font-weight: bold !important; padding: 0 !important;
+    display: flex !important; align-items: center !important; justify-content: center !important;
+    z-index: 999999 !important; cursor: pointer !important;
+}
+#close-modal-btn:hover, #close-settings-btn:hover { background: var(--tr-selected-bg) !important; }
+#login-btn { background: var(--tr-primary) !important; color: #fff !important; border: none !important; }
+#login-btn:hover { background: var(--tr-primary-hover) !important; }
+#signup-btn { background: var(--tr-pill-bg) !important; color: var(--tr-text) !important; border: 1px solid var(--tr-border) !important; }
+#signup-btn:hover { background: var(--tr-selected-bg) !important; }
+#auth-message { color: var(--tr-primary) !important; font-size: 14px !important; font-weight: 600 !important; text-align: center !important; margin-top: 12px !important; }
+
+input[type="text"], input[type="password"] { background-color: var(--tr-pill-bg) !important; color: var(--tr-text) !important; border: 1px solid var(--tr-border) !important; }
+span[data-testid="block-info"] { color: var(--tr-text) !important; opacity: 1 !important; }
+
+#settings-modal .setting-label { font-size: 12px; font-weight: 700; color: var(--tr-text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin: 6px 2px; }
+#theme-radio .wrap, #lang-radio .wrap { display: flex !important; gap: 8px; background: transparent !important; border: none !important; }
+#theme-radio label, #lang-radio label {
+    flex: 1; justify-content: center !important; border: 1px solid var(--tr-border) !important;
+    background: var(--tr-pill-bg) !important; border-radius: 10px !important; padding: 10px !important; font-size: 13px;
+}
+#theme-radio label input, #lang-radio label input { display: none !important; }
+#theme-radio label.selected, #lang-radio label.selected { background: var(--tr-primary) !important; color: #fff !important; border-color: var(--tr-primary) !important; font-weight: 700; }
+
+/* Gradio 기본 하단 푸터 숨김 (중복 방지) */
+footer { display: none !important; }
+
+/* 세 박스 높이 맞춤 */
+#result-panel { height: 100% !important; box-sizing: border-box; }
+.sidebar { height: 100% !important; box-sizing: border-box; }
 """
 
-# Pretendard 웹폰트 실제 로딩 (CUSTOM_CSS의 font-family 지정만으로는 로드되지 않음) +
-# 시스템 다크모드여도 항상 라이트로 강제.
-#
-# Gradio는 `<head data-gradio-mode>window.__gradio_mode__ = "app";</script>`를 정적 HTML에
-# 동기 스크립트로 직접 박아두고, `head=`로 넘긴 커스텀 스크립트는 클라이언트가 /config를
-# 받아온 "뒤에" 동적으로 주입한다 — 이미 Gradio 프론트엔드가 다크/라이트를 판단하는 시점(앱
-# 마운트 시)보다 늦게 실행돼서 window.__gradio_mode__를 여기서 바꿔봐야 소용없다(직접 확인:
-# Playwright로 다크모드 에뮬레이션 후 body에 "dark" 클래스가 계속 남아있는 것으로 검증).
-# 반면 URL 쿼리 파라미터 `?__theme=light`는 Gradio가 테마를 판단하는 바로 그 시점에
-# window.location에서 즉시 읽으므로 타이밍 문제가 없다(Playwright로 확인 완료). 그래서
-# 최초 진입 시 이 파라미터가 없으면 붙여서 한 번 리다이렉트시키는 방식으로 강제한다.
 HEAD_HTML = """
 <link rel="stylesheet" as="style" crossorigin
   href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css" />
+<link rel="stylesheet"
+  href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" />
+<script>
+  // 다크 테마로 강제 — Gradio가 마운트 시점에 URL의 ?__theme 를 즉시 읽는다.
+  (function () {
+    var u = new URL(window.location.href);
+    if (u.searchParams.get('__theme') !== 'dark' && !u.searchParams.get('__theme')) {
+      u.searchParams.set('__theme', 'dark');
+      window.location.replace(u.toString());
+    }
+  })();
+</script>
 """
 
 
 # ---------------------------------------------------------
 # Gradio UI
 # ---------------------------------------------------------
-with gr.Blocks(
-    title="TripRoute AI 여행 플래너",
-) as demo:
+with gr.Blocks(title="TripRoute AI 여행 플래너") as demo:
 
     # 로그인 지속용: 브라우저 localStorage에 refresh_token/user_id/email만 저장한다.
     # access_token은 절대 여기 저장하지 않는다(서버 State에만 둠) — 백엔드가 service_role
@@ -1144,23 +1062,39 @@ with gr.Blocks(
     previous_result_state = gr.State(None)
     active_session_id_state = gr.State(None)
     recent_sessions_state = gr.State([])
+    sidebar_open_state = gr.State(True)
+    language_state = gr.State("ko")
+    # 마지막으로 고른 테마(dark/light)를 localStorage에 저장해 새로고침 후에도
+    # 설정 라디오가 실제 적용된 테마를 그대로 보여주게 한다.
+    theme_browser_state = gr.BrowserState("dark")
 
-    gr.Markdown(
-        """
-# TripRoute AI 여행 플래너
+    # ── 상단 헤더: 로고 + 접기 화살표 ──
+    with gr.Row(elem_id="top-header"):
+        if LOGO_PATH.exists():
+            gr.Image(
+                value=str(LOGO_PATH),
+                show_label=False,
+                interactive=False,
+                show_download_button=False,
+                show_fullscreen_button=False,
+                container=False,
+                elem_id="logo-box",
+            )
+        else:
+            gr.Markdown("## 🗺️ TripRoute", elem_id="logo-box")
+        collapse_btn = gr.Button("←", elem_id="collapse-btn")
 
-Solar API와 Agentic Workflow를 활용한 국내 여행 일정 생성 챗봇
-""",
-        elem_id="title-box",
-    )
-
-    with gr.Group(visible=False, elem_id="auth-overlay") as auth_overlay:
+    # ── 로그인 / 설정 모달 ── 기본은 visible=False로 숨겨두고(Gradio 자체 렌더 스킵),
+    # 열 때 Python이 visible=True로 바꾸는 동시에 JS로 위치/투명도용 클래스를 맞춘다.
+    # gr.Group은 elem_id가 같은 div를 두 겹으로 렌더링해서(바깥 wrapper + 실제 컴포넌트),
+    # position:fixed 같은 CSS가 안쪽 겹까지 겹쳐 적용되며 내용이 다른 위치로 빠져버리는
+    # 문제가 있었다. gr.Column은 elem_id를 한 겹에만 렌더링해서 이 문제가 없다.
+    with gr.Column(visible=False, elem_id="auth-overlay") as auth_overlay:
         pass
 
-    with gr.Group(visible=False, elem_id="auth-modal") as auth_modal:
+    with gr.Column(visible=False, elem_id="auth-modal") as auth_modal:
         close_modal_btn = gr.Button("✕", elem_id="close-modal-btn")
-
-        with gr.Group(visible=True, elem_id="logged-out-group") as logged_out_group:
+        with gr.Column(visible=True, elem_id="logged-out-group") as logged_out_group:
             gr.Markdown("### 로그인 / 회원가입")
             email_input = gr.Textbox(label="이메일")
             password_input = gr.Textbox(label="비밀번호", type="password")
@@ -1169,121 +1103,86 @@ Solar API와 Agentic Workflow를 활용한 국내 여행 일정 생성 챗봇
                 signup_button = gr.Button("회원가입", variant="secondary", elem_id="signup-btn")
             auth_message = gr.Markdown("", elem_id="auth-message")
 
-    with gr.Row():
+    with gr.Column(visible=False, elem_id="settings-overlay") as settings_overlay:
+        pass
 
-        # 왼쪽 사이드바 (여행 설정)
-        with gr.Column(
-            scale=1,
-            min_width=250,
-            elem_classes=["sidebar"],
-        ):
+    with gr.Column(visible=False, elem_id="settings-modal") as settings_modal:
+        close_settings_btn = gr.Button("✕", elem_id="close-settings-btn")
+        gr.Markdown("### 설정")
+        gr.Markdown("<div class='setting-label'>테마</div>")
+        theme_radio = gr.Radio(
+            choices=[("다크 모드", "dark"), ("라이트 모드", "light")],
+            value="dark", show_label=False, elem_id="theme-radio",
+        )
+        gr.Markdown("<div class='setting-label'>언어 / Language</div>")
+        lang_radio = gr.Radio(
+            choices=[("한국어", "ko"), ("English", "en")],
+            value="ko", show_label=False, elem_id="lang-radio",
+        )
+
+    # ── 3단 본문 ──
+    with gr.Row(equal_height=True):
+
+        # 왼쪽: 사이드바
+        with gr.Column(scale=1, min_width=250, elem_classes=["sidebar"], elem_id="sidebar-col") as sidebar_body:
             login_trigger_btn = gr.Button("👤 로그인 / 내 정보", elem_id="login-trigger-btn")
 
-            # 로그인하면 이 모달 밖 사이드바에 바로 최근 대화 목록을 보여준다 —
-            # "로그인/내정보" 버튼을 다시 눌러 모달을 열어야 최근 대화가 보이던
-            # 기존 방식은 사용자가 못 찾는 문제가 있었음.
             with gr.Group(visible=False, elem_id="logged-in-group") as logged_in_group:
                 welcome_text = gr.Markdown("", elem_id="welcome-text")
-                logout_button = gr.Button("로그아웃", variant="secondary", elem_id="logout-btn")
-                gr.Markdown("### 최근 대화", elem_id="recent-session-title")
-                session_radio = gr.Radio(
-                    choices=[],
-                    label="",
-                    show_label=False,
-                    elem_id="session-radio",
-                )
-                no_session_msg = gr.Markdown("최근 대화 내역이 없습니다.", elem_id="no-session-msg", visible=False)
+                logout_button = gr.Button("로그아웃", elem_id="logout-btn")
 
-            gr.Markdown("### 여행 설정")
+            clear_button = gr.Button(I18N["ko"]["new_chat"], elem_id="new-chat-button")
+
+            recent_title = gr.Markdown(f"### {I18N['ko']['recent']}", elem_id="recent-title")
+            search_box = gr.Textbox(
+                show_label=False, placeholder=I18N["ko"]["search_ph"],
+                elem_id="search-box", lines=1,
+            )
+            session_radio = gr.Radio(choices=[], label="", show_label=False, elem_id="session-radio")
+            no_session_msg = gr.Markdown("최근 대화 내역이 없습니다.", elem_id="no-session-msg", visible=False)
+
+        # 가운데: 결과 패널
+        with gr.Column(scale=3, min_width=460):
+            with gr.Column(elem_id="result-panel"):
+                with gr.Tabs():
+                    with gr.Tab("일정표"):
+                        schedule_out = gr.Markdown(RESULT_PLACEHOLDER)
+                    with gr.Tab("이동 동선"):
+                        route_out = gr.Markdown(RESULT_PLACEHOLDER)
+                    with gr.Tab("예상 비용"):
+                        cost_out = gr.Markdown(RESULT_PLACEHOLDER)
+                    with gr.Tab("조건 요약"):
+                        condition_out = gr.Markdown(RESULT_PLACEHOLDER)
+
+        # 오른쪽: 요청사항 (대화 + 설정 + 입력)
+        with gr.Column(scale=2, min_width=360):
+            req_title = gr.Markdown(f"### {I18N['ko']['req']}", elem_id="req-title")
+            chatbot = gr.Chatbot(
+                show_label=False, height=360, elem_id="chatbot",
+                value=[{"role": "assistant", "content": WELCOME_MESSAGE}],
+                buttons=["copy"], feedback_options=("Like", "Dislike"),
+            )
 
             transport_mode = gr.Radio(
-                choices=[
-                    "대중교통",
-                    "택시",
-                    "자차",
-                    "렌터카",
-                ],
-                value="대중교통",
-                label="이동수단",
-                elem_id="transport-mode",
+                choices=["대중교통", "택시", "자차", "렌터카"],
+                value="대중교통", label="이동수단", elem_id="transport-mode",
             )
-
-            people_count = gr.Slider(
-                minimum=1,
-                maximum=10,
-                step=1,
-                value=2,
-                label="여행 인원",
-            )
-
-            clear_button = gr.Button(
-                "새 대화 시작",
-                variant="secondary",
-                elem_id="new-chat-button",
-            )
-
-            gr.Markdown(
-                """
-### 입력 예시
-
-- 강릉으로 1박 2일 여행 가고 싶어.
-- 전주에서 한옥과 맛집 중심으로 여행하고 싶어.
-- 부산으로 2박 3일 렌터카 여행을 계획해줘.
-
-대중교통 시간과 비용은 참고용 추정치입니다.
-"""
-            )
-
-        # 오른쪽 챗봇 영역
-        with gr.Column(
-            scale=3,
-            min_width=600,
-        ):
-            chatbot = gr.Chatbot(
-                show_label=False,
-                height=420,
-                elem_id="chatbot",
-                value=[{"role": "assistant", "content": WELCOME_MESSAGE}],
-                buttons=["copy"],
-                feedback_options=("Like", "Dislike"),
-            )
+            people_count = gr.Slider(minimum=1, maximum=10, step=1, value=2, label="여행 인원")
 
             message_input = gr.Textbox(
                 label="여행 요청",
-                placeholder=(
-                    "여행 지역, 기간, 취향을 입력해주세요. "
-                    "예) " + DEFAULT_MESSAGE
-                ),
-                lines=1,
-                max_lines=5,
-                elem_id="message-input",
+                placeholder=I18N["ko"]["msg_ph"],
+                lines=1, max_lines=5, elem_id="message-input",
             )
+            send_button = gr.Button("여행 계획 생성", variant="primary", elem_id="send-button")
 
-            send_button = gr.Button(
-                "여행 계획 생성",
-                variant="primary",
-                elem_id="send-button",
-            )
-
-    gr.Markdown("### 결과 패널", elem_id="result-panel-title")
-
-    with gr.Column(elem_id="result-panel"):
-        with gr.Tabs():
-            with gr.Tab("일정표"):
-                schedule_out = gr.Markdown(RESULT_PLACEHOLDER)
-            with gr.Tab("이동 동선"):
-                route_out = gr.Markdown(RESULT_PLACEHOLDER)
-            with gr.Tab("예상 비용"):
-                cost_out = gr.Markdown(RESULT_PLACEHOLDER)
-            with gr.Tab("조건 요약"):
-                condition_out = gr.Markdown(RESULT_PLACEHOLDER)
-
-    gr.Markdown(
-        """
-> 현재 여행지와 이동정보 일부는 MVP용 Mock 데이터를 사용하며,
-> 입력 조건 분석은 Solar API 또는 Mock fallback으로 처리됩니다.
-"""
-    )
+    # ── 하단 푸터 ──
+    with gr.Row(elem_id="footer-row"):
+        gr.Markdown(
+            "TripRoute AI 여행 플래너 · Solar API 기반 (일부 항목은 Mock 데이터/추정치) 🧡",
+            elem_id="app-footer",
+        )
+        footer_settings_btn = gr.Button("설정 ⚙️", elem_id="footer-settings-btn")
 
     # -----------------------------------------------------
     # 이벤트 연결
@@ -1321,19 +1220,8 @@ Solar API와 Agentic Workflow를 활용한 국내 여행 일정 생성 챗봇
         auth_browser_state,
     ]
 
-    send_button.click(
-        fn=chat,
-        inputs=chat_inputs,
-        outputs=chat_outputs,
-        show_progress="minimal",
-    )
-
-    message_input.submit(
-        fn=chat,
-        inputs=chat_inputs,
-        outputs=chat_outputs,
-        show_progress="minimal",
-    )
+    send_button.click(fn=chat, inputs=chat_inputs, outputs=chat_outputs, show_progress="minimal")
+    message_input.submit(fn=chat, inputs=chat_inputs, outputs=chat_outputs, show_progress="minimal")
 
     clear_chat_outputs = [
         chatbot,
@@ -1347,10 +1235,20 @@ Solar API와 Agentic Workflow를 활용한 국내 여행 일정 생성 챗봇
         no_session_msg,
     ]
 
-    clear_button.click(
-        fn=clear_chat,
-        inputs=[access_token_state],
-        outputs=clear_chat_outputs,
+    clear_button.click(fn=clear_chat, inputs=[access_token_state], outputs=clear_chat_outputs)
+
+    # 최근 대화 검색
+    search_box.change(
+        fn=search_sessions,
+        inputs=[search_box, recent_sessions_state],
+        outputs=[session_radio],
+    )
+
+    # 사이드바 접기/펼치기
+    collapse_btn.click(
+        fn=toggle_sidebar,
+        inputs=[sidebar_open_state],
+        outputs=[sidebar_body, collapse_btn, sidebar_open_state],
     )
 
     auth_outputs = [
@@ -1364,74 +1262,101 @@ Solar API와 Agentic Workflow를 활용한 국내 여행 일정 생성 챗봇
         recent_sessions_state,
         login_trigger_btn,
         auth_message,
+        auth_overlay,
+        auth_modal,
     ]
 
-    def open_modal():
+    def open_auth_modal():
         return gr.update(visible=True), gr.update(visible=True)
 
-    def close_modal():
+    def close_auth_modal():
         return gr.update(visible=False), gr.update(visible=False)
 
-    # Gradio의 Group visible=False 토글은 실제로 DOM을 닫지 않고(내부적으로
-    # 크기만 접으려고 시도), #auth-modal/#auth-overlay에 걸어둔 커스텀 CSS의
-    # !important 크기 지정(min-height, position:fixed 등)이 그 축소를 그대로
-    # 덮어써서 빈 박스가 화면에 계속 남는다. 그래서 실제 open/close는 JS로
-    # "hide" 클래스를 직접 토글해서 처리한다(CSS에 이미 정의된 .hide 규칙 사용).
+    def open_settings_modal():
+        return gr.update(visible=True), gr.update(visible=True)
+
+    def close_settings_modal():
+        return gr.update(visible=False), gr.update(visible=False)
+
+    # Python의 visible 토글만으로는 모달이 안 닫히는 경우가 있어(내부적으로 크기만
+    # 접으려 하고 position:fixed 같은 !important 크기 지정이 그 축소를 덮어씀), JS로
+    # "hide" 클래스를 같이 토글해 이중으로 확실히 여닫는다.
     OPEN_MODAL_JS = """
     () => {
         document.getElementById('auth-overlay')?.classList.remove('hide');
         document.getElementById('auth-modal')?.classList.remove('hide');
     }
     """
-
     CLOSE_MODAL_JS = """
     () => {
         document.getElementById('auth-overlay')?.classList.add('hide');
         document.getElementById('auth-modal')?.classList.add('hide');
     }
     """
-
-    # 로그인/회원가입 성공 시에만 모달을 닫는다(실패 시엔 에러 메시지를 보여줘야
-    # 하므로 열어둬야 함) — logged-in-group이 실제로 렌더링되었는지로 성공 여부를 판단.
-    CLOSE_MODAL_ON_AUTH_SUCCESS_JS = """
+    OPEN_SETTINGS_JS = """
     () => {
-        const loggedIn = document.getElementById('logged-in-group');
-        if (loggedIn && loggedIn.getBoundingClientRect().height > 0) {
-            document.getElementById('auth-overlay')?.classList.add('hide');
-            document.getElementById('auth-modal')?.classList.add('hide');
-        }
+        document.getElementById('settings-overlay')?.classList.remove('hide');
+        document.getElementById('settings-modal')?.classList.remove('hide');
+    }
+    """
+    CLOSE_SETTINGS_JS = """
+    () => {
+        document.getElementById('settings-overlay')?.classList.add('hide');
+        document.getElementById('settings-modal')?.classList.add('hide');
+    }
+    """
+    # 테마: ?__theme= 쿼리로 다크/라이트를 강제하고 새로고침(Gradio가 마운트 시점에 즉시 읽는다)
+    # theme_radio 값은 페이지 로드 시 sync_theme_radio(demo.load)가 저장된 테마로도
+    # 다시 세팅하는데, Gradio는 프로그램적으로 값을 바꿔도 change 이벤트가 다시 발화된다.
+    # 그래서 가드 없이 무조건 리로드하면 로드→동기화→change→리로드→로드→... 로 무한
+    # 새로고침 루프에 빠진다. 이미 그 테마로 떠 있는 페이지면 아무것도 하지 않는다.
+    APPLY_THEME_JS = """
+    (theme) => {
+        const url = new URL(window.location.href);
+        const current = url.searchParams.get('__theme') || 'dark';
+        if (current === theme) return;
+        url.searchParams.set('__theme', theme);
+        window.location.href = url.toString();
     }
     """
 
     login_trigger_btn.click(
-        fn=open_modal,
-        inputs=[],
-        outputs=[auth_overlay, auth_modal],
+        fn=open_auth_modal, inputs=[], outputs=[auth_overlay, auth_modal]
     ).then(fn=None, js=OPEN_MODAL_JS)
-
     close_modal_btn.click(
-        fn=close_modal,
-        inputs=[],
-        outputs=[auth_overlay, auth_modal],
+        fn=close_auth_modal, inputs=[], outputs=[auth_overlay, auth_modal]
     ).then(fn=None, js=CLOSE_MODAL_JS)
 
-    demo.load(
-        fn=restore_login,
-        inputs=[auth_browser_state],
-        outputs=auth_outputs,
+    footer_settings_btn.click(
+        fn=open_settings_modal, inputs=[], outputs=[settings_overlay, settings_modal]
+    ).then(fn=None, js=OPEN_SETTINGS_JS)
+    close_settings_btn.click(
+        fn=close_settings_modal, inputs=[], outputs=[settings_overlay, settings_modal]
+    ).then(fn=None, js=CLOSE_SETTINGS_JS)
+
+    theme_radio.change(
+        fn=save_theme, inputs=[theme_radio], outputs=[theme_browser_state]
+    ).then(fn=None, inputs=[theme_radio], js=APPLY_THEME_JS)
+
+    lang_radio.change(
+        fn=set_language,
+        inputs=[lang_radio],
+        outputs=[
+            clear_button, recent_title, search_box, req_title,
+            transport_mode, people_count, message_input, send_button, logout_button,
+            language_state,
+        ],
     )
 
-    login_button.click(
-        fn=do_login,
-        inputs=[email_input, password_input],
-        outputs=auth_outputs,
-    ).then(fn=None, js=CLOSE_MODAL_ON_AUTH_SUCCESS_JS)
+    demo.load(fn=restore_login, inputs=[auth_browser_state], outputs=auth_outputs)
+    demo.load(fn=sync_theme_radio, inputs=[theme_browser_state], outputs=[theme_radio])
 
-    signup_button.click(
-        fn=do_signup,
-        inputs=[email_input, password_input],
-        outputs=auth_outputs,
-    ).then(fn=None, js=CLOSE_MODAL_ON_AUTH_SUCCESS_JS)
+    # 로그인/회원가입 성공 시 auth_overlay/auth_modal을 직접 visible=False로 닫는다
+    # (auth_outputs에 이미 포함됨) — 실패 시엔 gr.update()라 열린 채로 유지되고
+    # auth_message에 에러가 표시된다. 화면에서 요소 높이를 측정해 성공 여부를 추정하던
+    # 예전 JS 방식은 타이밍에 따라 판단이 씹혀서 모달이 안 닫히고 남는 문제가 있었다.
+    login_button.click(fn=do_login, inputs=[email_input, password_input], outputs=auth_outputs)
+    signup_button.click(fn=do_signup, inputs=[email_input, password_input], outputs=auth_outputs)
 
     logout_button.click(
         fn=do_logout,
@@ -1474,4 +1399,5 @@ if __name__ == "__main__":
         theme=gr.themes.Default(),
         css=CUSTOM_CSS,
         head=HEAD_HTML,
+        allowed_paths=[str(LOGO_PATH.parent)],
     )
