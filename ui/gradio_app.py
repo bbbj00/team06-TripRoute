@@ -689,8 +689,13 @@ def clear_chat(access_token_info):
             # 메시지를 보내면 chat()에서 도시·기간 제목으로 갱신됨), 최소한 사이드바
             # 목록에는 클릭 즉시 나타나야 한다.
             sessions = chat_store.list_recent_sessions(access_token_info["user_id"])
+            # 방금 만든 새 세션을 목록에서 바로 선택된 상태로 보여준다 — 안 그러면
+            # gr.update()가 value를 안 건드려서 이전에 선택돼 있던 다른 대화가 계속
+            # 선택된 것처럼 보인다. session_radio.change가 다시 발화돼 load_session이
+            # 한 번 더 불려도, 방금 만든 빈 세션 기준이라 이 함수가 이미 채운 값과
+            # 동일해서(웰컴 메시지·빈 결과) 화면상 변화는 없다.
             sidebar_update = (
-                gr.update(choices=_session_choices(sessions), visible=True),
+                gr.update(choices=_session_choices(sessions), value=new_session_id, visible=True),
                 sessions,
                 gr.update(visible=False),
             )
