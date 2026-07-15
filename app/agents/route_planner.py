@@ -242,12 +242,20 @@ POPULAR_REVIEW_COUNT_THRESHOLD = 300
 OVERVIEW_SNIPPET_MAX_LENGTH = 60
 
 
+# "OO는 경상북도 경주시 황남동에 위치한 생선구이 전문점이다"처럼 이름·주소·업종만
+# 반복하는 문장에 흔히 나오는 표현. 주소는 이미 다른 필드로 따로 보여주므로, 추천
+# 이유에서는 이런 문장을 건너뛰고 대표 메뉴·분위기·역사 등 실제 특징이 담긴 문장을 쓴다.
+_LOCATION_BOILERPLATE_PATTERN = re.compile(r"위치한|위치해|자리하|자리잡|소재하")
+
+
 def _extract_overview_snippet(overview: str | None, max_length: int = OVERVIEW_SNIPPET_MAX_LENGTH) -> str:
     """
     TourAPI overview(개요) 원문에서 추천 이유에 붙일 짧은 설명 한 조각을 뽑아낸다.
 
     overview는 보통 "(출처: OO)" 같은 출처 표기나 개행으로 문단이 나뉜 긴 소개문이라,
-    그대로 붙이면 너무 길고 장황해진다. 첫 문장(또는 max_length자)만 잘라 쓴다.
+    그대로 붙이면 너무 길고 장황해진다. 위치 안내 문장은 건너뛰고, 실제 특징이 담긴
+    문장(또는 max_length자)만 잘라 쓴다. 모든 문장이 위치 안내뿐이면 빈 문자열을 반환해
+    "리뷰 OO개, 평점 OO의 맛집입니다."만으로 끝나게 한다.
     """
     if not overview:
         return ""
@@ -256,10 +264,17 @@ def _extract_overview_snippet(overview: str | None, max_length: int = OVERVIEW_S
     if not text:
         return ""
 
-    first_sentence = re.split(r"(?<=[.!?])\s", text, maxsplit=1)[0].strip()
-    if len(first_sentence) > max_length:
-        first_sentence = first_sentence[:max_length].rstrip() + "..."
-    return first_sentence
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+    sentence = next(
+        (s for s in sentences if not _LOCATION_BOILERPLATE_PATTERN.search(s)),
+        "",
+    )
+    if not sentence:
+        return ""
+
+    if len(sentence) > max_length:
+        sentence = sentence[:max_length].rstrip() + "..."
+    return sentence
 
 
 # overview가 없을 때(TourAPI 실시간 검색 결과는 개요를 안 주는 searchKeyword2만 거쳐서
